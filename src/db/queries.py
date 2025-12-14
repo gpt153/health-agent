@@ -251,3 +251,53 @@ async def clear_conversation_history(user_id: str) -> None:
                 (user_id,)
             )
             await conn.commit()
+
+
+# ==========================================
+# Food Entry Retrieval Functions
+# ==========================================
+
+async def get_food_entries_by_date(
+    user_id: str,
+    start_date: str = None,
+    end_date: str = None
+) -> list[dict]:
+    """
+    Get food entries for a user within a date range
+    
+    Args:
+        user_id: Telegram user ID
+        start_date: Start date (YYYY-MM-DD format, defaults to today)
+        end_date: End date (YYYY-MM-DD format, defaults to today)
+        
+    Returns:
+        List of food entries with timestamp, foods, calories, macros
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            if not start_date:
+                # Default to today
+                await cur.execute(
+                    """
+                    SELECT id, timestamp, foods, total_calories, total_macros, meal_type, notes
+                    FROM food_entries
+                    WHERE user_id = %s AND DATE(timestamp) = CURRENT_DATE
+                    ORDER BY timestamp DESC
+                    """,
+                    (user_id,)
+                )
+            else:
+                await cur.execute(
+                    """
+                    SELECT id, timestamp, foods, total_calories, total_macros, meal_type, notes
+                    FROM food_entries
+                    WHERE user_id = %s 
+                      AND DATE(timestamp) >= %s::date
+                      AND DATE(timestamp) <= %s::date
+                    ORDER BY timestamp DESC
+                    """,
+                    (user_id, start_date, end_date or start_date)
+                )
+            
+            rows = await cur.fetchall()
+            return [dict(row) for row in rows]

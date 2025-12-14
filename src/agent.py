@@ -16,6 +16,7 @@ from src.db.queries import (
     create_tracking_category,
     save_tracking_entry,
     get_tracking_categories,
+    get_food_entries_by_date,
 )
 from src.memory.file_manager import MemoryFileManager
 from src.memory.system_prompt import generate_system_prompt
@@ -78,6 +79,18 @@ class ReminderScheduleResult(BaseModel):
     message: str
     reminder_time: str
     reminder_message: str
+
+
+class FoodSummaryResult(BaseModel):
+    """Result of food summary query"""
+
+    success: bool
+    message: str
+    total_calories: float
+    total_protein: float
+    total_carbs: float
+    total_fat: float
+    entry_count: int
 
 
 # Initialize agent with model from config
@@ -400,6 +413,86 @@ async def schedule_reminder(
         )
 
 
+@agent.tool
+async def get_daily_food_summary(
+    ctx, date: Optional[str] = None
+) -> FoodSummaryResult:
+    """
+    Get summary of food intake for a specific date (calories and macros)
+
+    Args:
+        date: Date in "YYYY-MM-DD" format (defaults to today)
+
+    Returns:
+        FoodSummaryResult with total calories, macros, and entry count
+    """
+    deps: AgentDeps = ctx.deps
+
+    try:
+        # Get food entries for the specified date (or today)
+        entries = await get_food_entries_by_date(
+            user_id=deps.telegram_id,
+            start_date=date,
+            end_date=date
+        )
+
+        if not entries:
+            return FoodSummaryResult(
+                success=True,
+                message="No food entries found for this date",
+                total_calories=0.0,
+                total_protein=0.0,
+                total_carbs=0.0,
+                total_fat=0.0,
+                entry_count=0,
+            )
+
+        # Calculate totals from all entries
+        total_calories = 0.0
+        total_protein = 0.0
+        total_carbs = 0.0
+        total_fat = 0.0
+
+        for entry in entries:
+            total_calories += entry.get("total_calories", 0) or 0
+
+            # Parse macros from JSONB field
+            macros = entry.get("total_macros", {})
+            if isinstance(macros, str):
+                import json
+                macros = json.loads(macros)
+
+            total_protein += macros.get("protein", 0) or 0
+            total_carbs += macros.get("carbs", 0) or 0
+            total_fat += macros.get("fat", 0) or 0
+
+        logger.info(
+            f"Food summary for {deps.telegram_id}: {total_calories} cal, {len(entries)} entries"
+        )
+
+        return FoodSummaryResult(
+            success=True,
+            message=f"Found {len(entries)} food entries",
+            total_calories=total_calories,
+            total_protein=total_protein,
+            total_carbs=total_carbs,
+            total_fat=total_fat,
+            entry_count=len(entries),
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to get food summary: {e}", exc_info=True)
+        return FoodSummaryResult(
+            success=False,
+            message=f"Failed to retrieve food summary: {str(e)}",
+            total_calories=0.0,
+            total_protein=0.0,
+            total_carbs=0.0,
+            total_fat=0.0,
+            entry_count=0,
+        )
+
+
 async def get_agent_response(
     telegram_id: str,
     user_message: str,
@@ -464,6 +557,7 @@ async def get_agent_response(
         dynamic_agent.tool(create_new_tracking_category)
         dynamic_agent.tool(log_tracking_entry)
         dynamic_agent.tool(schedule_reminder)
+        dynamic_agent.tool(get_daily_food_summary)
 
         # Run agent with message history for context (converted to ModelMessage objects)
         result = await dynamic_agent.run(
@@ -493,6 +587,7 @@ async def get_agent_response(
                 fallback_agent.tool(create_new_tracking_category)
                 fallback_agent.tool(log_tracking_entry)
                 fallback_agent.tool(schedule_reminder)
+                fallback_agent.tool(get_daily_food_summary)
 
                 # Run with fallback model (converted history)
                 result = await fallback_agent.run(
