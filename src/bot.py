@@ -6,7 +6,14 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from src.config import TELEGRAM_BOT_TOKEN, DATA_PATH
 from src.utils.auth import is_authorized
-from src.db.queries import create_user, user_exists, save_food_entry
+from src.db.queries import (
+    create_user,
+    user_exists,
+    save_food_entry,
+    save_conversation_message,
+    get_conversation_history,
+    clear_conversation_history,
+)
 from src.memory.file_manager import memory_manager
 from src.agent import get_agent_response
 from src.utils.vision import analyze_food_photo
@@ -172,6 +179,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /start - Reset and start over
 /transparency - See what data I have about you
 /settings - View and change your preferences
+/clear - Clear conversation history (fresh start)
 /help - Show this help message
 
 **Tips:**
@@ -184,6 +192,27 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 All your data is stored locally in markdown files. You have full control and can delete anything anytime."""
 
     await update.message.reply_text(help_text, parse_mode="Markdown")
+
+
+async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Clear conversation history"""
+    user_id = str(update.effective_user.id)
+
+    # Check authorization
+    if not is_authorized(user_id):
+        return
+
+    try:
+        await clear_conversation_history(user_id)
+        await update.message.reply_text(
+            "🧹 Conversation history cleared! Starting fresh.\n\n"
+            "I'll still remember your profile, preferences, and data - "
+            "just not our recent chat messages."
+        )
+        logger.info(f"Cleared conversation history for {user_id}")
+    except Exception as e:
+        logger.error(f"Error clearing history: {e}", exc_info=True)
+        await update.message.reply_text("Sorry, I had trouble clearing the history.")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -202,8 +231,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Send typing indicator
         await update.message.chat.send_action("typing")
 
-        # Get agent response with dynamic system prompt and tools (including reminder_manager)
-        response = await get_agent_response(user_id, text, memory_manager, reminder_manager)
+        # Load conversation history from database (last 20 messages = 10 turns)
+        message_history = await get_conversation_history(user_id, limit=20)
+
+        # Get agent response with conversation history
+        response = await get_agent_response(
+            user_id, text, memory_manager, reminder_manager, message_history
+        )
+
+        # Save user message and assistant response to database
+        await save_conversation_message(user_id, "user", text, message_type="text")
+        await save_conversation_message(user_id, "assistant", response, message_type="text")
 
         # Send response
         await update.message.reply_text(response)
@@ -299,6 +337,21 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         response = "\n".join(response_lines)
         await update.message.reply_text(response, parse_mode="Markdown")
 
+        # Save to conversation history database with metadata
+        photo_description = f"User sent a food photo. Analysis: {', '.join([f.name for f in analysis.foods])}"
+        photo_metadata = {
+            "foods": [{"name": f.name, "quantity": f.quantity} for f in analysis.foods],
+            "total_calories": total_calories,
+            "confidence": analysis.confidence
+        }
+
+        await save_conversation_message(
+            user_id, "user", photo_description, message_type="photo", metadata=photo_metadata
+        )
+        await save_conversation_message(
+            user_id, "assistant", response, message_type="photo_response"
+        )
+
     except Exception as e:
         logger.error(f"Error in handle_photo: {e}", exc_info=True)
         await update.message.reply_text(
@@ -320,6 +373,7 @@ def create_bot_application() -> Application:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("transparency", transparency))
     app.add_handler(CommandHandler("settings", settings_command))
+    app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("help", help_command))
 
     # Add message handlers

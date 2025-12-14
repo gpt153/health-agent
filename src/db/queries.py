@@ -167,3 +167,87 @@ async def get_active_reminders(user_id: str) -> list[dict]:
                 (user_id,)
             )
             return await cur.fetchall()
+
+
+
+# ==========================================
+# Conversation History Functions
+# ==========================================
+
+async def save_conversation_message(
+    user_id: str,
+    role: str,
+    content: str,
+    message_type: str = "text",
+    metadata: dict = None
+) -> None:
+    """
+    Save a message to conversation history
+    
+    Args:
+        user_id: Telegram user ID
+        role: 'user' or 'assistant'
+        content: Message content
+        message_type: 'text', 'photo', 'reminder', 'voice', etc.
+        metadata: Additional context (photo analysis, etc.)
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO conversation_history (user_id, role, content, message_type, metadata)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (user_id, role, content, message_type, json.dumps(metadata or {}))
+            )
+            await conn.commit()
+
+
+async def get_conversation_history(
+    user_id: str,
+    limit: int = 20
+) -> list[dict]:
+    """
+    Get recent conversation history for a user
+    
+    Args:
+        user_id: Telegram user ID
+        limit: Maximum number of messages to retrieve (default: 20 = 10 turns)
+        
+    Returns:
+        List of messages in format: [{"role": "user", "content": "..."}]
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT role, content, message_type, metadata, timestamp
+                FROM conversation_history
+                WHERE user_id = %s
+                ORDER BY timestamp DESC
+                LIMIT %s
+                """,
+                (user_id, limit)
+            )
+            rows = await cur.fetchall()
+    
+    # Reverse to get chronological order (oldest first)
+    messages = []
+    for row in reversed(rows):
+        messages.append({
+            "role": row["role"],
+            "content": row["content"]
+        })
+    
+    return messages
+
+
+async def clear_conversation_history(user_id: str) -> None:
+    """Clear all conversation history for a user"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM conversation_history WHERE user_id = %s",
+                (user_id,)
+            )
+            await conn.commit()

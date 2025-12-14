@@ -5,7 +5,8 @@ from typing import Optional
 from uuid import uuid4
 from datetime import datetime
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, ModelMessagesTypeAdapter
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart
 from pydantic import BaseModel, Field
 
 from src.config import AGENT_MODEL
@@ -400,36 +401,57 @@ async def schedule_reminder(
 
 
 async def get_agent_response(
-    telegram_id: str, user_message: str, memory_manager: MemoryFileManager, reminder_manager=None
+    telegram_id: str,
+    user_message: str,
+    memory_manager: MemoryFileManager,
+    reminder_manager=None,
+    message_history: list = None,
 ) -> str:
     """
     Get agent response with dynamic system prompt and tools
+    Automatically falls back to OpenAI if Claude is overloaded
 
     Args:
         telegram_id: User's Telegram ID
         user_message: User's message
         memory_manager: Memory file manager instance
+        reminder_manager: Reminder manager instance
+        message_history: List of previous messages for context
 
     Returns:
         Agent's response string
     """
+    # Load user memory from markdown files
+    user_memory = await memory_manager.load_user_memory(telegram_id)
+
+    # Generate dynamic system prompt
+    system_prompt = generate_system_prompt(user_memory)
+
+    # Create dependencies
+    deps = AgentDeps(
+        telegram_id=telegram_id,
+        memory_manager=memory_manager,
+        user_memory=user_memory,
+        reminder_manager=reminder_manager,
+    )
+
+    # Convert message_history from dicts to ModelMessage objects
+    converted_history = []
+    if message_history:
+        for msg in message_history:
+            if msg.get("role") == "user":
+                converted_history.append(ModelRequest.user_text_prompt(msg["content"]))
+            elif msg.get("role") == "assistant":
+                converted_history.append(
+                    ModelResponse(
+                        parts=[TextPart(content=msg["content"])],
+                        model_name="assistant"
+                    )
+                )
+
+    # Try with primary model (Claude) first
     try:
-        # Load user memory from markdown files
-        user_memory = await memory_manager.load_user_memory(telegram_id)
-
-        # Generate dynamic system prompt
-        system_prompt = generate_system_prompt(user_memory)
-
-        # Create dependencies
-        deps = AgentDeps(
-            telegram_id=telegram_id,
-            memory_manager=memory_manager,
-            user_memory=user_memory,
-            reminder_manager=reminder_manager,
-        )
-
-        # Create agent instance with dynamic system prompt
-        # PydanticAI requires system_prompt at agent creation, not in run()
+        logger.info(f"Attempting with primary model: {AGENT_MODEL}")
         dynamic_agent = Agent(
             model=AGENT_MODEL,
             system_prompt=system_prompt,
@@ -443,11 +465,47 @@ async def get_agent_response(
         dynamic_agent.tool(log_tracking_entry)
         dynamic_agent.tool(schedule_reminder)
 
-        # Run agent
-        result = await dynamic_agent.run(user_message, deps=deps)
+        # Run agent with message history for context (converted to ModelMessage objects)
+        result = await dynamic_agent.run(
+            user_message, deps=deps, message_history=converted_history
+        )
 
         return result.output
 
-    except Exception as e:
-        logger.error(f"Agent error: {e}", exc_info=True)
-        return f"Sorry, I encountered an error: {str(e)}"
+    except Exception as primary_error:
+        # Check if it's an API overload/availability error
+        error_str = str(primary_error).lower()
+        if any(keyword in error_str for keyword in ['overload', '529', '503', 'rate_limit', 'unavailable']):
+            logger.warning(f"Primary model ({AGENT_MODEL}) unavailable: {primary_error}")
+            logger.info("Falling back to OpenAI GPT-4o...")
+
+            try:
+                # Fallback to OpenAI GPT-4o
+                fallback_agent = Agent(
+                    model="openai:gpt-4o",
+                    system_prompt=system_prompt,
+                    deps_type=AgentDeps,
+                )
+
+                # Register tools on fallback agent
+                fallback_agent.tool(update_profile)
+                fallback_agent.tool(save_preference)
+                fallback_agent.tool(create_new_tracking_category)
+                fallback_agent.tool(log_tracking_entry)
+                fallback_agent.tool(schedule_reminder)
+
+                # Run with fallback model (converted history)
+                result = await fallback_agent.run(
+                    user_message, deps=deps, message_history=converted_history
+                )
+
+                logger.info("✅ Fallback to OpenAI successful")
+                return result.output
+
+            except Exception as fallback_error:
+                logger.error(f"Fallback model also failed: {fallback_error}", exc_info=True)
+                return f"Sorry, both AI services are currently unavailable. Please try again in a moment."
+        else:
+            # Not an availability error, return the original error
+            logger.error(f"Agent error (not availability issue): {primary_error}", exc_info=True)
+            return f"Sorry, I encountered an error: {str(primary_error)}"
