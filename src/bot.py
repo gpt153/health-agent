@@ -13,9 +13,13 @@ from src.db.queries import (
     save_conversation_message,
     get_conversation_history,
     clear_conversation_history,
+    approve_tool,
+    reject_tool,
+    get_tool_by_name,
 )
 from src.memory.file_manager import memory_manager
 from src.agent import get_agent_response
+from src.agent.dynamic_tools import tool_manager
 from src.utils.vision import analyze_food_photo
 from src.models.food import FoodEntry
 from src.scheduler.reminder_manager import ReminderManager
@@ -215,6 +219,81 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("Sorry, I had trouble clearing the history.")
 
 
+async def approve_tool_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Approve a pending dynamic tool creation"""
+    user_id = str(update.effective_user.id)
+
+    # Check authorization
+    if not is_authorized(user_id):
+        return
+
+    # Check if user is admin (first user in allowed list)
+    from src.config import ALLOWED_TELEGRAM_IDS
+    if not ALLOWED_TELEGRAM_IDS or user_id != ALLOWED_TELEGRAM_IDS[0]:
+        await update.message.reply_text("⛔ Only admins can approve tools")
+        return
+
+    # Get approval_id from command args
+    if not context.args or len(context.args) == 0:
+        await update.message.reply_text("Usage: /approve_tool <approval_id>")
+        return
+
+    approval_id = context.args[0]
+
+    try:
+        await approve_tool(approval_id, user_id)
+
+        # Reload tools to make newly approved tool available
+        await tool_manager.load_all_tools()
+
+        await update.message.reply_text(
+            f"✅ Tool approved and loaded\n\n"
+            f"Approval ID: {approval_id}\n"
+            f"The tool is now available for use."
+        )
+        logger.info(f"Admin {user_id} approved tool {approval_id}")
+
+    except Exception as e:
+        logger.error(f"Error approving tool: {e}", exc_info=True)
+        await update.message.reply_text(f"Error: {str(e)}")
+
+
+async def reject_tool_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reject a pending dynamic tool creation"""
+    user_id = str(update.effective_user.id)
+
+    # Check authorization
+    if not is_authorized(user_id):
+        return
+
+    # Check if user is admin (first user in allowed list)
+    from src.config import ALLOWED_TELEGRAM_IDS
+    if not ALLOWED_TELEGRAM_IDS or user_id != ALLOWED_TELEGRAM_IDS[0]:
+        await update.message.reply_text("⛔ Only admins can reject tools")
+        return
+
+    # Get approval_id from command args
+    if not context.args or len(context.args) == 0:
+        await update.message.reply_text("Usage: /reject_tool <approval_id>")
+        return
+
+    approval_id = context.args[0]
+
+    try:
+        await reject_tool(approval_id, user_id)
+
+        await update.message.reply_text(
+            f"❌ Tool rejected\n\n"
+            f"Approval ID: {approval_id}\n"
+            f"The tool will not be created."
+        )
+        logger.info(f"Admin {user_id} rejected tool {approval_id}")
+
+    except Exception as e:
+        logger.error(f"Error rejecting tool: {e}", exc_info=True)
+        await update.message.reply_text(f"Error: {str(e)}")
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle text messages"""
     user_id = str(update.effective_user.id)
@@ -375,6 +454,8 @@ def create_bot_application() -> Application:
     app.add_handler(CommandHandler("settings", settings_command))
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("approve_tool", approve_tool_command))
+    app.add_handler(CommandHandler("reject_tool", reject_tool_command))
 
     # Add message handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

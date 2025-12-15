@@ -4,6 +4,7 @@ import asyncio
 from src.config import validate_config, LOG_LEVEL
 from src.db.connection import db
 from src.bot import create_bot_application
+from src.agent.dynamic_tools import tool_manager
 
 # Configure logging
 logging.basicConfig(
@@ -25,6 +26,11 @@ async def main() -> None:
         # Initialize database
         logger.info("Initializing database connection pool...")
         await db.init_pool()
+
+        # Load dynamic tools from database
+        logger.info("Loading dynamic tools...")
+        loaded_tools = await tool_manager.load_all_tools()
+        logger.info(f"Loaded {len(loaded_tools)} dynamic tools: {', '.join(loaded_tools) if loaded_tools else 'none'}")
 
         # Create and start bot
         logger.info("Starting Telegram bot...")

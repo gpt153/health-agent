@@ -1,5 +1,6 @@
 """PydanticAI agent for adaptive health coaching"""
 import logging
+import re
 from dataclasses import dataclass
 from typing import Optional
 from uuid import uuid4
@@ -17,9 +18,18 @@ from src.db.queries import (
     save_tracking_entry,
     get_tracking_categories,
     get_food_entries_by_date,
+    save_dynamic_tool,
+    get_tool_by_name,
+    create_tool_approval_request,
 )
 from src.memory.file_manager import MemoryFileManager
 from src.memory.system_prompt import generate_system_prompt
+from src.agent.dynamic_tools import (
+    validate_tool_code,
+    classify_tool_type,
+    tool_manager,
+    CodeValidationError
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +101,17 @@ class FoodSummaryResult(BaseModel):
     total_carbs: float
     total_fat: float
     entry_count: int
+
+
+class DynamicToolCreationResult(BaseModel):
+    """Result of dynamic tool creation"""
+
+    success: bool
+    message: str
+    tool_name: str
+    tool_type: str  # 'read' or 'write'
+    requires_approval: bool
+    approval_id: Optional[str] = None
 
 
 # Initialize agent with model from config
@@ -493,6 +514,193 @@ async def get_daily_food_summary(
         )
 
 
+@agent.tool
+async def create_dynamic_tool(
+    ctx,
+    description: str,
+    parameter_names: list[str],
+    parameter_types: list[str],
+    expected_return_type: str
+) -> DynamicToolCreationResult:
+    """
+    Create a new dynamic tool by generating code from description
+
+    This is the self-extension mechanism. When the agent needs a capability
+    that doesn't exist, it calls this tool to create it.
+
+    Args:
+        description: What the tool should do (e.g., "Get total calories for this week")
+        parameter_names: List of parameter names (e.g., ["user_id", "start_date"])
+        parameter_types: List of parameter types (e.g., ["str", "Optional[str]"])
+        expected_return_type: Return type (e.g., "FoodSummaryResult")
+
+    Returns:
+        DynamicToolCreationResult with creation status
+    """
+    deps: AgentDeps = ctx.deps
+
+    try:
+        # Generate tool name from description
+        tool_name = re.sub(r'[^a-z0-9_]', '_', description.lower().replace(' ', '_'))
+        tool_name = re.sub(r'_+', '_', tool_name)[:50]
+
+        # Check if tool already exists
+        existing = await get_tool_by_name(tool_name)
+        if existing:
+            return DynamicToolCreationResult(
+                success=False,
+                message=f"Tool '{tool_name}' already exists",
+                tool_name=tool_name,
+                tool_type="unknown",
+                requires_approval=False
+            )
+
+        # Generate function code
+        function_code = await _generate_tool_code(
+            tool_name=tool_name,
+            description=description,
+            parameter_names=parameter_names,
+            parameter_types=parameter_types,
+            expected_return_type=expected_return_type
+        )
+
+        # Classify tool type
+        tool_type = classify_tool_type(function_code, description)
+
+        # Validate code
+        is_valid, error_msg = validate_tool_code(function_code, tool_type)
+        if not is_valid:
+            return DynamicToolCreationResult(
+                success=False,
+                message=f"Code validation failed: {error_msg}",
+                tool_name=tool_name,
+                tool_type=tool_type,
+                requires_approval=False
+            )
+
+        # Build schemas
+        parameters_schema = {
+            "type": "object",
+            "properties": {
+                name: {"type": ptype}
+                for name, ptype in zip(parameter_names, parameter_types)
+            }
+        }
+
+        return_schema = {
+            "type": "object",
+            "properties": {"type": expected_return_type}
+        }
+
+        # Save to database
+        tool_id = await save_dynamic_tool(
+            tool_name=tool_name,
+            tool_type=tool_type,
+            description=description,
+            parameters_schema=parameters_schema,
+            return_schema=return_schema,
+            function_code=function_code,
+            created_by="system"
+        )
+
+        # If write tool, require approval
+        if tool_type == "write":
+            approval_id = await create_tool_approval_request(
+                tool_id=tool_id,
+                requested_by=deps.telegram_id,
+                request_message=f"I want to create a tool: {tool_name}. {description}. This tool will perform WRITE operations."
+            )
+
+            return DynamicToolCreationResult(
+                success=True,
+                message=f"Tool '{tool_name}' created but requires admin approval before use",
+                tool_name=tool_name,
+                tool_type=tool_type,
+                requires_approval=True,
+                approval_id=approval_id
+            )
+
+        # Read-only tool - load immediately
+        await tool_manager.load_all_tools()  # Reload tools
+
+        return DynamicToolCreationResult(
+            success=True,
+            message=f"Tool '{tool_name}' created and ready to use",
+            tool_name=tool_name,
+            tool_type=tool_type,
+            requires_approval=False
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to create dynamic tool: {e}", exc_info=True)
+        return DynamicToolCreationResult(
+            success=False,
+            message=f"Failed to create tool: {str(e)}",
+            tool_name=tool_name if 'tool_name' in locals() else "unknown",
+            tool_type="unknown",
+            requires_approval=False
+        )
+
+
+async def _generate_tool_code(
+    tool_name: str,
+    description: str,
+    parameter_names: list[str],
+    parameter_types: list[str],
+    expected_return_type: str
+) -> str:
+    """
+    Generate Python function code for a new tool
+
+    For MVP, uses templates. In production, would use LLM to generate code.
+
+    Args:
+        tool_name: Name for the function
+        description: What it should do
+        parameter_names: List of parameter names
+        parameter_types: List of parameter types
+        expected_return_type: Return type
+
+    Returns:
+        Python function code as string
+    """
+    import re
+
+    # Build parameter list
+    params = ", ".join([
+        f"{name}: {ptype}"
+        for name, ptype in zip(parameter_names, parameter_types)
+    ])
+
+    # Template (simplified - in production, use LLM)
+    template = f'''async def {tool_name}(ctx, {params}) -> {expected_return_type}:
+    """
+    {description}
+
+    Auto-generated dynamic tool.
+    """
+    deps: AgentDeps = ctx.deps
+
+    try:
+        # TODO: Implement tool logic
+        # This would be generated by LLM based on description
+
+        return {expected_return_type}(
+            success=True,
+            message="Tool executed successfully"
+        )
+
+    except Exception as e:
+        logger.error(f"Tool {tool_name} failed: {{e}}")
+        return {expected_return_type}(
+            success=False,
+            message=f"Failed: {{str(e)}}"
+        )
+'''
+
+    return template
+
+
 async def get_agent_response(
     telegram_id: str,
     user_message: str,
@@ -558,6 +766,10 @@ async def get_agent_response(
         dynamic_agent.tool(log_tracking_entry)
         dynamic_agent.tool(schedule_reminder)
         dynamic_agent.tool(get_daily_food_summary)
+        dynamic_agent.tool(create_dynamic_tool)
+
+        # Register dynamically loaded tools
+        tool_manager.register_tools_on_agent(dynamic_agent)
 
         # Run agent with message history for context (converted to ModelMessage objects)
         result = await dynamic_agent.run(
@@ -588,6 +800,10 @@ async def get_agent_response(
                 fallback_agent.tool(log_tracking_entry)
                 fallback_agent.tool(schedule_reminder)
                 fallback_agent.tool(get_daily_food_summary)
+                fallback_agent.tool(create_dynamic_tool)
+
+                # Register dynamically loaded tools
+                tool_manager.register_tools_on_agent(fallback_agent)
 
                 # Run with fallback model (converted history)
                 result = await fallback_agent.run(
