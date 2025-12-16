@@ -24,8 +24,9 @@ class Database:
             self.connection_string,
             min_size=2,
             max_size=10,
-            open=True
+            open=False
         )
+        await self._pool.open()
 
     async def close_pool(self) -> None:
         """Close connection pool"""
