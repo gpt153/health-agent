@@ -225,10 +225,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await memory_manager.create_user_files(user_id)
 
         # Auto-detect and set timezone for new users
-        user_data = {
-            "language_code": update.effective_user.language_code or "en"
-        }
-        detected_timezone = detect_timezone_from_telegram(user_data)
+        from src.utils.timezone_helper import suggest_timezones_for_language
+        language_code = update.effective_user.language_code or "en"
+        suggested_timezones = suggest_timezones_for_language(language_code)
+        detected_timezone = suggested_timezones[0] if suggested_timezones else "UTC"
         await memory_manager.update_preferences(user_id, "timezone", detected_timezone)
         logger.info(f"Set timezone for new user {user_id}: {detected_timezone}")
 
@@ -684,26 +684,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     # Check if user has timezone set (first-time setup)
-    from src.utils.timezone_helper import get_timezone_from_profile, suggest_timezones_for_language, update_timezone_in_profile
-    import pytz
+    from src.utils.timezone_helper import get_timezone_from_profile, suggest_timezones_for_language, update_timezone_in_profile, normalize_timezone
 
     user_timezone = get_timezone_from_profile(user_id)
     if not user_timezone:
         # Check if message looks like a timezone string (e.g., "America/New_York")
         if '/' in text and len(text.split()) == 1:
-            try:
-                # Validate timezone
-                pytz.timezone(text.strip())
+            # Normalize timezone (handles case-insensitive input)
+            normalized_tz = normalize_timezone(text.strip())
+            if normalized_tz:
                 # Valid timezone - set it
-                if update_timezone_in_profile(user_id, text.strip()):
+                if update_timezone_in_profile(user_id, normalized_tz):
                     await update.message.reply_text(
-                        f"✅ Great! Your timezone is now set to **{text.strip()}**.\n\n"
+                        f"✅ Great! Your timezone is now set to **{normalized_tz}**.\n\n"
                         f"You can start using the bot normally now!",
                         parse_mode="Markdown"
                     )
                     return
-            except:
-                pass  # Not a valid timezone, show setup message
+            else:
+                # Invalid timezone - show error
+                await update.message.reply_text(
+                    f"❌ Invalid timezone. Try \"America/New_York\" or share your location.",
+                    parse_mode="Markdown"
+                )
+                return
 
         # New user - ask for timezone with smart suggestions
         language_code = update.effective_user.language_code or 'en'

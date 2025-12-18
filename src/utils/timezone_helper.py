@@ -95,3 +95,28 @@ def get_timezone_from_profile(user_id: str) -> str | None:
     except Exception as e:
         logger.error(f"Error reading timezone: {e}")
         return None
+
+
+def normalize_timezone(timezone_input: str) -> str | None:
+    """
+    Normalize timezone input to proper case (e.g., 'europe/stockholm' -> 'Europe/Stockholm').
+    Returns None if timezone is invalid.
+    """
+    import pytz
+
+    # Try exact match first
+    try:
+        pytz.timezone(timezone_input)
+        return timezone_input
+    except:
+        pass
+
+    # Try case-insensitive matching
+    timezone_lower = timezone_input.lower()
+    for tz in pytz.all_timezones:
+        if tz.lower() == timezone_lower:
+            logger.info(f"Normalized '{timezone_input}' to '{tz}'")
+            return tz
+
+    # No match found
+    return None
