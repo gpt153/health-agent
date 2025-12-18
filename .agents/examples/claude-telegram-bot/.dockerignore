@@ -1,0 +1,51 @@
+# Git
+.git
+.gitignore
+
+# Environment
+.env
+.env.local
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg-info
+dist
+build
+venv/
+env/
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+README.md
+*.md
+
+# Session data (will be volume mounted)
+telegram_sessions/*
+!telegram_sessions/.gitkeep
+
+# Workspace (will be volume mounted)
+workspace/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tests
+tests/
+pytest.ini
+.pytest_cache/

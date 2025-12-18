@@ -1,7 +1,11 @@
 """Dynamic system prompt generation based on user preferences"""
+import logging
+from src.memory.mem0_manager import mem0_manager
+
+logger = logging.getLogger(__name__)
 
 
-def generate_system_prompt(user_memory: dict) -> str:
+def generate_system_prompt(user_memory: dict, user_id: str = None, current_query: str = None) -> str:
     """
     Generate personalized system prompt based on user memory
 
@@ -25,9 +29,62 @@ def generate_system_prompt(user_memory: dict) -> str:
     elif "Brevity: detailed" in prefs_text:
         brevity = "detailed"
 
-    # Get current date for date-aware responses
+    # Get current date and time for date/time-aware responses
     from datetime import datetime
-    current_date = datetime.now().strftime("%Y-%m-%d")
+    import pytz
+    import re
+
+    # Extract user's timezone from profile (default to Europe/Stockholm)
+    profile_text = user_memory.get("profile", "")
+    timezone_match = re.search(r'Timezone:\s*([^\n]+)', profile_text)
+    user_timezone_str = timezone_match.group(1).strip() if timezone_match else "Europe/Stockholm"
+
+    try:
+        user_tz = pytz.timezone(user_timezone_str)
+    except:
+        user_tz = pytz.timezone('Europe/Stockholm')
+
+    # Get current time in both UTC and user's timezone
+    utc_now = datetime.now(pytz.UTC)
+    user_now = utc_now.astimezone(user_tz)
+
+    current_date = user_now.strftime("%Y-%m-%d")
+    current_time = user_now.strftime("%H:%M")
+    current_datetime_str = f"{current_date} {current_time}"
+    weekday = user_now.strftime("%A")
+    utc_time = utc_now.strftime("%H:%M")
+
+    # Search Mem0 for relevant context if query provided
+    mem0_context = ""
+    if user_id and current_query:
+        try:
+            memories = mem0_manager.search(user_id, current_query, limit=5)
+            logger.info(f"[MEM0_DEBUG] Query: {current_query[:50]}")
+            logger.info(f"[MEM0_DEBUG] Memories type: {type(memories).__name__}")
+            logger.info(f"[MEM0_DEBUG] Memories content: {str(memories)[:200]}")
+
+            # Handle Mem0 returning dict with 'results' key or direct list
+            if isinstance(memories, dict):
+                memories = memories.get('results', [])
+
+            if memories:
+                mem0_context = "\n\n**RELEVANT MEMORIES (from semantic search):**\n"
+                for mem in memories:
+                    # Handle different Mem0 return formats
+                    if isinstance(mem, dict):
+                        # Dictionary format: extract 'memory' or 'text' field
+                        memory_text = mem.get('memory', mem.get('text', str(mem)))
+                    elif isinstance(mem, str):
+                        # String format: use directly
+                        memory_text = mem
+                    else:
+                        # Object format: convert to string
+                        memory_text = str(mem)
+                    mem0_context += f"- {memory_text}\n"
+                mem0_context += "\n"
+                logger.info(f"[MEM0_DEBUG] Added {len(memories)} memories to context")
+        except Exception as e:
+            logger.error(f"[MEM0_DEBUG] Error searching memories: {e}", exc_info=True)
 
     base_prompt = f"""You are an adaptive AI fitness and nutrition coach. You remember everything about each user and personalize your coaching style accordingly.
 
@@ -43,8 +100,38 @@ def generate_system_prompt(user_memory: dict) -> str:
 4. Provide personalized nutrition and fitness advice
 5. **Create new tools dynamically** - When you need functionality that doesn't exist, use `create_dynamic_tool()` to generate it
 
-**Context about this user:**
+<user_context>
+<profile>
 {user_memory.get("profile", "No profile yet")}
+</profile>
+
+<patterns_and_schedules>
+{user_memory.get("patterns", "No patterns recorded yet")}
+</patterns_and_schedules>
+
+<semantic_memories>
+{mem0_context if mem0_context else "No additional memories found"}
+</semantic_memories>
+</user_context>
+
+<critical_instruction>
+⚠️ YOU MUST ANSWER USER QUESTIONS FROM THE <user_context> ABOVE
+
+Rules:
+1. If the answer exists in <patterns_and_schedules>, USE IT - do NOT say "I don't know"
+2. If the answer exists in <semantic_memories>, USE IT
+3. NEVER ignore information that's clearly present in the context above
+4. When uncertain, reference the specific section: "According to your patterns..." or "Based on your schedule..."
+
+Common questions and where to find answers:
+- Training days → Look in <patterns_and_schedules> for "Training Schedule" or "Training days"
+- Sleep schedule → Look in <patterns_and_schedules> for "Sleep" or wake/bedtime times
+- Injections → Look in <patterns_and_schedules> for "Injection Schedule" or "Medical"
+- Food history → Look in <patterns_and_schedules> for "Nutrition"
+- Any schedule/routine → Check <patterns_and_schedules> FIRST before saying you don't know
+
+If you cannot find the answer in <user_context>, THEN you can say you don't have that information.
+</critical_instruction>
 
 **CRITICAL SAFETY RULES - NEVER VIOLATE THESE:**
 
@@ -61,11 +148,15 @@ def generate_system_prompt(user_memory: dict) -> str:
 4. Include today's date in responses: "Today ({current_date}), you have..."
 5. **If you don't have a tool for what the user needs** (weekly summaries, averages, etc.) → CREATE ONE using `create_dynamic_tool()` FIRST, then use it
 
-📅 **DATE AWARENESS:**
-1. Today's date is: {current_date}
-2. Always specify dates when discussing food/progress: "Today", "Yesterday", "This week"
-3. Don't assume old conversation messages are from today
-4. If unsure about dates, ask: "Are you asking about today or a previous date?"
+📅 **DATE AND TIME AWARENESS:**
+1. Current UTC time: {utc_time} UTC
+2. User's local time: {current_datetime_str} ({user_timezone_str})
+3. Today is {weekday}, {current_date}
+4. Always use user's local time ({user_timezone_str}) when answering time-based questions
+5. Always specify dates when discussing food/progress: "Today", "Yesterday", "This week"
+6. Don't assume old conversation messages are from today
+7. For questions about "next reminder" or "when is X", calculate based on user's local time {current_time}
+8. If unsure about dates, ask: "Are you asking about today or a previous date?"
 
 ✅ **WHEN DATA IS MISSING OR YOU LACK CAPABILITY:**
 - User asks for data/functionality you don't have a tool for → **CREATE THE TOOL FIRST** using `create_dynamic_tool()`, then use it

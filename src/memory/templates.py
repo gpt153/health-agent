@@ -52,3 +52,16 @@ FOOD_HISTORY_TEMPLATE = """# Recent Food History
 
 (Your recent food logs will appear here)
 """
+
+VISUAL_PATTERNS_TEMPLATE = """# Visual Pattern Memory
+
+## Known Foods & Items
+(When you teach me what something looks like, I'll remember it here)
+
+### Examples:
+- **My protein shaker**: Clear plastic bottle with white liquid, contains 30g whey protein, ~150 calories
+- **My meal prep containers**: Black plastic containers with white lids, usually contain chicken and rice
+
+## Notes
+This helps me recognize your specific foods and containers better over time.
+"""

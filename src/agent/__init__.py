@@ -21,6 +21,8 @@ from src.db.queries import (
     save_dynamic_tool,
     get_tool_by_name,
     create_tool_approval_request,
+    create_user,
+    user_exists,
 )
 from src.memory.file_manager import MemoryFileManager
 from src.memory.system_prompt import generate_system_prompt
@@ -43,6 +45,7 @@ class AgentDeps:
     memory_manager: MemoryFileManager
     user_memory: dict  # Loaded from markdown files
     reminder_manager: object = None  # ReminderManager instance (optional)
+    bot_application: object = None  # Telegram bot application for notifications (optional)
 
 
 # Tool response models
@@ -91,6 +94,14 @@ class ReminderScheduleResult(BaseModel):
     reminder_message: str
 
 
+class RemindersListResult(BaseModel):
+    """Result of getting user's reminders"""
+
+    success: bool
+    message: str
+    reminders: list[dict]
+
+
 class FoodSummaryResult(BaseModel):
     """Result of food summary query"""
 
@@ -101,6 +112,38 @@ class FoodSummaryResult(BaseModel):
     total_carbs: float
     total_fat: float
     entry_count: int
+
+
+class VisualPatternResult(BaseModel):
+    """Result of visual pattern save"""
+
+    success: bool
+    message: str
+    item_name: str
+
+
+class UserInfoResult(BaseModel):
+    """Result of saving user information"""
+
+    success: bool
+    message: str
+    category: str
+
+
+class AddUserResult(BaseModel):
+    """Result of adding a new user"""
+
+    success: bool
+    message: str
+    user_id: str
+
+
+class InviteCodeResult(BaseModel):
+    """Result of generating invite code"""
+
+    success: bool
+    message: str
+    code: Optional[str] = None
 
 
 class DynamicToolCreationResult(BaseModel):
@@ -404,7 +447,33 @@ async def schedule_reminder(
                     user_timezone = parts[-1].strip()
                     break
 
-        # Schedule the reminder
+        # Save reminder to database for persistence
+        from src.models.reminder import Reminder, ReminderSchedule
+        from src.db.queries import create_reminder
+        from uuid import uuid4
+
+        reminder_id = str(uuid4())
+        reminder_obj = Reminder(
+            id=reminder_id,
+            user_id=deps.telegram_id,
+            reminder_type="daily",
+            message=message,
+            schedule=ReminderSchedule(
+                type="daily",
+                time=reminder_time,
+                timezone=user_timezone
+            ),
+            active=True
+        )
+
+        # Save to database first
+        await create_reminder(reminder_obj)
+
+        # Log feature usage
+        from src.db.queries import log_feature_usage
+        await log_feature_usage(deps.telegram_id, "reminders")
+
+        # Then schedule in JobQueue
         await deps.reminder_manager.schedule_custom_reminder(
             user_id=deps.telegram_id,
             reminder_time=reminder_time,
@@ -414,7 +483,7 @@ async def schedule_reminder(
         )
 
         logger.info(
-            f"Scheduled reminder for {deps.telegram_id}: {reminder_time} {user_timezone}"
+            f"Scheduled and saved reminder for {deps.telegram_id}: {reminder_time} {user_timezone}"
         )
 
         return ReminderScheduleResult(
@@ -431,6 +500,56 @@ async def schedule_reminder(
             message=f"Failed to schedule reminder: {str(e)}",
             reminder_time=reminder_time,
             reminder_message=message,
+        )
+
+
+@agent.tool
+async def get_user_reminders(ctx) -> RemindersListResult:
+    """
+    Get all active reminders for the current user
+
+    Returns:
+        RemindersListResult with list of active reminders
+    """
+    deps: AgentDeps = ctx.deps
+
+    try:
+        from src.db.queries import get_active_reminders
+
+        reminders = await get_active_reminders(deps.telegram_id)
+
+        if not reminders:
+            return RemindersListResult(
+                success=True,
+                message="You have no active reminders",
+                reminders=[]
+            )
+
+        # Format reminders for display
+        reminder_list = []
+        for r in reminders:
+            schedule = r.get('schedule', {})
+            reminder_list.append({
+                'id': r.get('id'),
+                'message': r.get('message'),
+                'time': schedule.get('time'),
+                'type': r.get('reminder_type'),
+                'timezone': schedule.get('timezone', 'UTC')
+            })
+
+        count = len(reminders)
+        return RemindersListResult(
+            success=True,
+            message=f"You have {count} active reminder{'s' if count > 1 else ''}",
+            reminders=reminder_list
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting reminders: {e}", exc_info=True)
+        return RemindersListResult(
+            success=False,
+            message=f"Error: {str(e)}",
+            reminders=[]
         )
 
 
@@ -511,6 +630,333 @@ async def get_daily_food_summary(
             total_carbs=0.0,
             total_fat=0.0,
             entry_count=0,
+        )
+
+
+@agent.tool
+async def save_user_info(
+    ctx, category: str, information: str
+) -> UserInfoResult:
+    """
+    Save ANY information the user shares to their permanent memory
+
+    Use this tool PROACTIVELY for ALL user information, including:
+    - Medical: medications, supplements, injection schedules, conditions, allergies
+    - Lifestyle: sleep patterns, stress levels, energy levels, work schedule
+    - Training: exercise routines, training days, recovery notes
+    - Nutrition: meal timing, eating windows, dietary preferences
+    - Goals: motivations, milestones, challenges
+    - Observations: mood patterns, behavioral patterns, correlations
+    - Life events: injuries, illnesses, life changes, travel
+    - ANY other information the user shares
+
+    IMPORTANT: Use this tool IMMEDIATELY when user shares information.
+    Don't wait, don't ask permission - just save it!
+
+    Args:
+        category: Category name (e.g., "Medications", "Training Schedule", "Health Conditions")
+        information: The information to save
+
+    Returns:
+        UserInfoResult with success status
+    """
+    deps: AgentDeps = ctx.deps
+
+    try:
+        # Save to patterns file
+        await deps.memory_manager.save_observation(
+            deps.telegram_id, category, information
+        )
+
+        logger.info(f"Saved user info to '{category}' for {deps.telegram_id}")
+
+        return UserInfoResult(
+            success=True,
+            message=f"I've saved that to your {category} information",
+            category=category,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to save user info: {e}")
+        return UserInfoResult(
+            success=False,
+            message=f"Failed to save: {str(e)}",
+            category=category,
+        )
+
+
+@agent.tool
+async def add_new_user(
+    ctx, user_id: str
+) -> AddUserResult:
+    """
+    Add a new user to the system (ADMIN ONLY)
+
+    This tool is only available to the admin user (7376426503).
+    Creates user directory, initializes files, adds to database, and updates .env
+
+    Args:
+        user_id: Telegram user ID to add (e.g., "1234567890")
+
+    Returns:
+        AddUserResult with success status
+    """
+    deps: AgentDeps = ctx.deps
+
+    # Check if caller is admin
+    ADMIN_USER_ID = "7376426503"
+    if deps.telegram_id != ADMIN_USER_ID:
+        logger.warning(f"Non-admin user {deps.telegram_id} attempted to add user")
+        return AddUserResult(
+            success=False,
+            message="❌ Only the admin can add new users",
+            user_id=user_id,
+        )
+
+    try:
+        import os
+        from pathlib import Path
+
+        # Validate user_id format
+        if not user_id.isdigit():
+            return AddUserResult(
+                success=False,
+                message="❌ Invalid user ID format (must be numeric)",
+                user_id=user_id,
+            )
+
+        # Check if user already exists
+        if await user_exists(user_id):
+            return AddUserResult(
+                success=False,
+                message=f"⚠️ User {user_id} already exists",
+                user_id=user_id,
+            )
+
+        # 1. Create user in database
+        await create_user(user_id)
+        logger.info(f"Created user {user_id} in database")
+
+        # 2. Create user files
+        await deps.memory_manager.create_user_files(user_id)
+        logger.info(f"Created user files for {user_id}")
+
+        # 3. Update .env file with new user ID
+        env_path = Path(".env")
+        env_content = env_path.read_text()
+
+        # Find ALLOWED_TELEGRAM_IDS line and update it
+        lines = env_content.split("\n")
+        updated = False
+        for i, line in enumerate(lines):
+            if line.startswith("ALLOWED_TELEGRAM_IDS="):
+                current_ids = line.split("=", 1)[1].strip()
+                if current_ids:
+                    new_ids = f"{current_ids},{user_id}"
+                else:
+                    new_ids = user_id
+                lines[i] = f"ALLOWED_TELEGRAM_IDS={new_ids}"
+                updated = True
+                break
+
+        if updated:
+            env_path.write_text("\n".join(lines))
+            logger.info(f"Updated .env with new user {user_id}")
+        else:
+            logger.error("Could not find ALLOWED_TELEGRAM_IDS in .env")
+            return AddUserResult(
+                success=False,
+                message=f"⚠️ User created but failed to update .env file",
+                user_id=user_id,
+            )
+
+        return AddUserResult(
+            success=True,
+            message=f"✅ User {user_id} added successfully!\n\n"
+                    f"📁 Files created in data/{user_id}/\n"
+                    f"💾 Added to database\n"
+                    f"🔐 Added to authorized users\n\n"
+                    f"⚠️ Note: Bot needs restart to recognize new user in .env",
+            user_id=user_id,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to add user: {e}", exc_info=True)
+        return AddUserResult(
+            success=False,
+            message=f"❌ Failed to add user: {str(e)}",
+            user_id=user_id,
+        )
+
+
+@agent.tool
+async def generate_invite_code(
+    ctx,
+    count: int = 1,
+    tier: str = 'free',
+    trial_days: int = 7,
+    max_uses: Optional[int] = 1
+) -> InviteCodeResult:
+    """
+    **GENERATE INVITE CODES** - Use this when user says "generate invite code", "create code", "make invite code", or similar (ADMIN ONLY)
+
+    This tool creates invite codes that new users can redeem to activate their accounts.
+    Only available to admin user (7376426503).
+
+    Use cases:
+    - "generate invite code" → Create 1 code
+    - "generate 5 codes" → Create 5 codes
+    - "create premium invite code" → Create code with premium tier
+
+    Args:
+        count: Number of codes to generate (default: 1)
+        tier: Subscription tier ('free', 'basic', 'premium') (default: 'free')
+        trial_days: Number of trial days (0 = no trial, default: 7)
+        max_uses: Max uses per code (None = unlimited, default: 1 for single-use)
+
+    Returns:
+        InviteCodeResult with generated code(s)
+    """
+    deps: AgentDeps = ctx.deps
+
+    # Check if caller is admin
+    from src.utils.auth import is_admin
+    if not is_admin(deps.telegram_id):
+        logger.warning(f"Non-admin user {deps.telegram_id} attempted to generate invite codes")
+        return InviteCodeResult(
+            success=False,
+            message="❌ Only the admin can generate invite codes"
+        )
+
+    try:
+        import random
+        import string
+        from src.db.queries import create_invite_code
+
+        # Validate inputs
+        if count < 1 or count > 100:
+            return InviteCodeResult(
+                success=False,
+                message="❌ Count must be between 1 and 100"
+            )
+
+        if tier not in ['free', 'basic', 'premium']:
+            return InviteCodeResult(
+                success=False,
+                message="❌ Tier must be 'free', 'basic', or 'premium'"
+            )
+
+        if trial_days < 0:
+            return InviteCodeResult(
+                success=False,
+                message="❌ Trial days must be 0 or positive"
+            )
+
+        # Word list for generating readable codes
+        words = [
+            'apple', 'beach', 'cloud', 'dance', 'eagle', 'flame', 'grape', 'house',
+            'island', 'jungle', 'kite', 'lemon', 'moon', 'night', 'ocean', 'pony',
+            'queen', 'river', 'salt', 'tree', 'umbrella', 'valley', 'water', 'yellow',
+            'zebra', 'storm', 'pearl', 'tiger', 'frost', 'coral', 'stone', 'wind'
+        ]
+
+        # Generate codes
+        codes = []
+        for _ in range(count):
+            # Generate random 3-word code (e.g., "salt-house-pony")
+            code = '-'.join(random.choices(words, k=3))
+
+            # Create code in database
+            await create_invite_code(
+                code=code,
+                created_by=deps.telegram_id,
+                max_uses=max_uses,
+                tier=tier,
+                trial_days=trial_days
+            )
+
+            codes.append(code)
+            logger.info(f"Admin {deps.telegram_id} generated invite code: {code}")
+
+        # Format response
+        if count == 1:
+            message = f"""✅ **Invite Code Generated**
+
+📝 **Code:** `{codes[0]}`
+
+**Details:**
+• Tier: {tier.title()}
+• Trial: {trial_days} days
+• Max Uses: {'Unlimited' if max_uses is None else max_uses}
+
+Share this code with new users to activate their accounts."""
+        else:
+            codes_list = '\n'.join([f"• `{code}`" for code in codes])
+            message = f"""✅ **{count} Invite Codes Generated**
+
+**Codes:**
+{codes_list}
+
+**Details:**
+• Tier: {tier.title()}
+• Trial: {trial_days} days
+• Max Uses per code: {'Unlimited' if max_uses is None else max_uses}
+
+Share these codes with new users."""
+
+        return InviteCodeResult(
+            success=True,
+            message=message,
+            code=codes[0] if count == 1 else None
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to generate invite codes: {e}", exc_info=True)
+        return InviteCodeResult(
+            success=False,
+            message=f"❌ Failed to generate codes: {str(e)}"
+        )
+
+
+@agent.tool
+async def remember_visual_pattern(
+    ctx, item_name: str, description: str
+) -> VisualPatternResult:
+    """
+    Remember a visual pattern for food/item recognition
+
+    Use this when the user teaches you what something looks like or corrects your identification.
+    Examples: "My protein shaker", "My meal prep chicken", "My coffee mug"
+
+    Args:
+        item_name: Name of the item (e.g., "My protein shaker", "Chicken breast portion")
+        description: Visual and nutritional description (e.g., "Clear bottle with white liquid, 30g protein, 150 cal")
+
+    Returns:
+        VisualPatternResult with success status
+    """
+    deps: AgentDeps = ctx.deps
+
+    try:
+        # Save visual pattern to user's memory
+        await deps.memory_manager.add_visual_pattern(
+            deps.telegram_id, item_name, description
+        )
+
+        logger.info(f"Saved visual pattern for {deps.telegram_id}: {item_name}")
+
+        return VisualPatternResult(
+            success=True,
+            message=f"I'll remember that {item_name}: {description}",
+            item_name=item_name,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to save visual pattern: {e}")
+        return VisualPatternResult(
+            success=False,
+            message=f"Failed to save: {str(e)}",
+            item_name=item_name,
         )
 
 
@@ -611,6 +1057,33 @@ async def create_dynamic_tool(
                 request_message=f"I want to create a tool: {tool_name}. {description}. This tool will perform WRITE operations."
             )
 
+            # Send notification to admin
+            if deps.bot_application:
+                try:
+                    from src.config import ALLOWED_TELEGRAM_IDS
+                    admin_id = ALLOWED_TELEGRAM_IDS[0] if ALLOWED_TELEGRAM_IDS else None
+
+                    if admin_id:
+                        notification_text = (
+                            f"🔔 **Tool Approval Needed**\n\n"
+                            f"**Tool Name:** {tool_name}\n"
+                            f"**Type:** Write operation\n"
+                            f"**Description:** {description}\n"
+                            f"**Requested by:** User {deps.telegram_id}\n\n"
+                            f"**Approval ID:** `{approval_id}`\n\n"
+                            f"To approve: `/approve_tool {approval_id}`\n"
+                            f"To reject: `/reject_tool {approval_id}`"
+                        )
+
+                        await deps.bot_application.bot.send_message(
+                            chat_id=admin_id,
+                            text=notification_text,
+                            parse_mode="Markdown"
+                        )
+                        logger.info(f"Sent approval notification to admin {admin_id}")
+                except Exception as e:
+                    logger.error(f"Failed to send approval notification: {e}")
+
             return DynamicToolCreationResult(
                 success=True,
                 message=f"Tool '{tool_name}' created but requires admin approval before use",
@@ -707,6 +1180,7 @@ async def get_agent_response(
     memory_manager: MemoryFileManager,
     reminder_manager=None,
     message_history: list = None,
+    bot_application=None,
 ) -> str:
     """
     Get agent response with dynamic system prompt and tools
@@ -718,6 +1192,7 @@ async def get_agent_response(
         memory_manager: Memory file manager instance
         reminder_manager: Reminder manager instance
         message_history: List of previous messages for context
+        bot_application: Telegram bot application for notifications
 
     Returns:
         Agent's response string
@@ -725,8 +1200,38 @@ async def get_agent_response(
     # Load user memory from markdown files
     user_memory = await memory_manager.load_user_memory(telegram_id)
 
-    # Generate dynamic system prompt
-    system_prompt = generate_system_prompt(user_memory)
+    # Check if we can extract a direct answer from patterns.md
+    from src.memory.answer_extractor import extract_direct_answer
+    patterns_content = user_memory.get("patterns", "")
+    direct_answer = extract_direct_answer(user_message, patterns_content)
+
+    # Add current timestamp to EVERY message so Claude always knows the time
+    from datetime import datetime
+    import pytz
+    import re
+
+    # Get user's timezone from profile
+    profile_text = user_memory.get("profile", "")
+    timezone_match = re.search(r'Timezone:\s*([^\n]+)', profile_text)
+    user_timezone_str = timezone_match.group(1).strip() if timezone_match else "Europe/Stockholm"
+
+    try:
+        user_tz = pytz.timezone(user_timezone_str)
+    except:
+        user_tz = pytz.timezone('Europe/Stockholm')
+
+    # Get current time in user's timezone
+    user_now = datetime.now(user_tz)
+    timestamp_info = f"[Current time: {user_now.strftime('%Y-%m-%d %H:%M')} {user_timezone_str}, {user_now.strftime('%A')}]"
+
+    # If we found a direct answer, inject it into the user's message
+    enhanced_message = f"{timestamp_info}\n\n{user_message}"
+    if direct_answer:
+        enhanced_message = f"{timestamp_info}\n\n{user_message}\n\n{direct_answer}"
+        logger.info(f"[DIRECT_ANSWER] Injected answer into query")
+
+    # Generate dynamic system prompt with Mem0 semantic search
+    system_prompt = generate_system_prompt(user_memory, user_id=telegram_id, current_query=enhanced_message)
 
     # Create dependencies
     deps = AgentDeps(
@@ -734,6 +1239,7 @@ async def get_agent_response(
         memory_manager=memory_manager,
         user_memory=user_memory,
         reminder_manager=reminder_manager,
+        bot_application=bot_application,
     )
 
     # Convert message_history from dicts to ModelMessage objects
@@ -753,6 +1259,10 @@ async def get_agent_response(
     # Try with primary model (Claude) first
     try:
         logger.info(f"Attempting with primary model: {AGENT_MODEL}")
+        logger.info(f"[SYSTEM_PROMPT_DEBUG] Length: {len(system_prompt)} chars")
+        logger.info(f"[SYSTEM_PROMPT_DEBUG] Contains 'Training Schedule': {'Training Schedule' in system_prompt}")
+        logger.info(f"[SYSTEM_PROMPT_DEBUG] Contains 'Monday, Tuesday': {'Monday, Tuesday' in system_prompt}")
+
         dynamic_agent = Agent(
             model=AGENT_MODEL,
             system_prompt=system_prompt,
@@ -762,10 +1272,15 @@ async def get_agent_response(
         # Register tools on the dynamic agent
         dynamic_agent.tool(update_profile)
         dynamic_agent.tool(save_preference)
+        dynamic_agent.tool(save_user_info)
+        dynamic_agent.tool(add_new_user)
+        dynamic_agent.tool(generate_invite_code)
         dynamic_agent.tool(create_new_tracking_category)
         dynamic_agent.tool(log_tracking_entry)
         dynamic_agent.tool(schedule_reminder)
+        dynamic_agent.tool(get_user_reminders)
         dynamic_agent.tool(get_daily_food_summary)
+        dynamic_agent.tool(remember_visual_pattern)
         dynamic_agent.tool(create_dynamic_tool)
 
         # Register dynamically loaded tools
@@ -773,7 +1288,7 @@ async def get_agent_response(
 
         # Run agent with message history for context (converted to ModelMessage objects)
         result = await dynamic_agent.run(
-            user_message, deps=deps, message_history=converted_history
+            enhanced_message, deps=deps, message_history=converted_history
         )
 
         return result.output
@@ -796,10 +1311,15 @@ async def get_agent_response(
                 # Register tools on fallback agent
                 fallback_agent.tool(update_profile)
                 fallback_agent.tool(save_preference)
+                fallback_agent.tool(save_user_info)
+                fallback_agent.tool(add_new_user)
+                fallback_agent.tool(generate_invite_code)
                 fallback_agent.tool(create_new_tracking_category)
                 fallback_agent.tool(log_tracking_entry)
                 fallback_agent.tool(schedule_reminder)
+                fallback_agent.tool(get_user_reminders)
                 fallback_agent.tool(get_daily_food_summary)
+                fallback_agent.tool(remember_visual_pattern)
                 fallback_agent.tool(create_dynamic_tool)
 
                 # Register dynamically loaded tools
@@ -807,7 +1327,7 @@ async def get_agent_response(
 
                 # Run with fallback model (converted history)
                 result = await fallback_agent.run(
-                    user_message, deps=deps, message_history=converted_history
+                    enhanced_message, deps=deps, message_history=converted_history
                 )
 
                 logger.info("✅ Fallback to OpenAI successful")

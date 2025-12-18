@@ -38,3 +38,4 @@ class VisionAnalysisResult(BaseModel):
     foods: list[FoodItem]
     confidence: str  # high, medium, low
     clarifying_questions: list[str] = Field(default_factory=list)
+    timestamp: Optional[datetime] = None  # When the food was actually eaten (if mentioned in caption)

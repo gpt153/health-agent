@@ -188,6 +188,8 @@ class DynamicToolManager:
             TrackingEntryResult,
             ReminderScheduleResult,
             FoodSummaryResult,
+            VisualPatternResult,
+            UserInfoResult,
             DynamicToolCreationResult,
         )
 
@@ -204,6 +206,8 @@ class DynamicToolManager:
             'TrackingEntryResult': TrackingEntryResult,
             'ReminderScheduleResult': ReminderScheduleResult,
             'FoodSummaryResult': FoodSummaryResult,
+            'VisualPatternResult': VisualPatternResult,
+            'UserInfoResult': UserInfoResult,
             'DynamicToolCreationResult': DynamicToolCreationResult,
         }
 

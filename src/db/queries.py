@@ -9,6 +9,7 @@ from src.models.user import UserProfile
 from src.models.food import FoodEntry
 from src.models.tracking import TrackingCategory, TrackingEntry
 from src.models.reminder import Reminder
+from src.models.sleep import SleepEntry
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,16 @@ async def get_active_reminders(user_id: str) -> list[dict]:
             return await cur.fetchall()
 
 
+async def get_active_reminders_all() -> list[dict]:
+    """Get all active reminders for all users"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM reminders WHERE active = true ORDER BY user_id"
+            )
+            return await cur.fetchall()
+
+
 
 # ==========================================
 # Conversation History Functions
@@ -232,13 +243,31 @@ async def get_conversation_history(
             rows = await cur.fetchall()
     
     # Reverse to get chronological order (oldest first)
+    # Filter out unhelpful "I don't know" responses to keep history clean
+    unhelpful_phrases = [
+        "jag har ingen information",
+        "i don't have that information",
+        "jag vet inte",
+        "i don't know",
+        "jag har inte",
+        "jag kan inte svara",
+        "i can't answer",
+        "jag vet fortfarande inte"
+    ]
+
     messages = []
     for row in reversed(rows):
+        content = row["content"].lower()
+
+        # Skip assistant messages that are unhelpful "I don't know" responses
+        if row["role"] == "assistant" and any(phrase in content for phrase in unhelpful_phrases):
+            continue
+
         messages.append({
             "role": row["role"],
             "content": row["content"]
         })
-    
+
     return messages
 
 
@@ -598,3 +627,488 @@ async def reject_tool(
             )
             await conn.commit()
     logger.info(f"Rejected tool creation request {approval_id}")
+
+
+async def get_pending_approvals() -> list[dict]:
+    """Get all pending tool approval requests"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT
+                    a.id as approval_id,
+                    a.tool_id,
+                    a.requested_by,
+                    a.request_message,
+                    a.created_at,
+                    t.tool_name,
+                    t.tool_type,
+                    t.description
+                FROM dynamic_tool_approvals a
+                JOIN dynamic_tools t ON a.tool_id = t.id
+                WHERE a.status = 'pending'
+                ORDER BY a.created_at DESC
+                """
+            )
+            return await cur.fetchall()
+
+
+# Invite code operations
+async def create_invite_code(
+    code: str,
+    created_by: str,
+    max_uses: Optional[int] = None,
+    tier: str = 'free',
+    trial_days: int = 0,
+    expires_at: Optional[datetime] = None
+) -> str:
+    """Create a new invite code"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO invite_codes (code, created_by, max_uses, tier, trial_days, expires_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (code, created_by, max_uses, tier, trial_days, expires_at)
+            )
+            result = await cur.fetchone()
+            await conn.commit()
+            logger.info(f"Created invite code: {code}")
+            return str(result[0])
+
+
+async def validate_invite_code(code: str) -> Optional[dict]:
+    """
+    Validate an invite code and return its details if valid
+    Returns None if code is invalid, expired, or used up
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, code, max_uses, uses_count, tier, trial_days, expires_at, active
+                FROM invite_codes
+                WHERE code = %s
+                """,
+                (code,)
+            )
+            result = await cur.fetchone()
+
+            if not result:
+                return None
+
+            code_id, code_str, max_uses, uses_count, tier, trial_days, expires_at, active = result
+
+            # Check if code is active
+            if not active:
+                return None
+
+            # Check if code has expired
+            if expires_at and datetime.now() > expires_at:
+                return None
+
+            # Check if code has remaining uses
+            if max_uses is not None and uses_count >= max_uses:
+                return None
+
+            return {
+                'id': str(code_id),
+                'code': code_str,
+                'tier': tier,
+                'trial_days': trial_days
+            }
+
+
+async def use_invite_code(code: str, telegram_id: str) -> bool:
+    """
+    Mark invite code as used and activate user
+    Returns True if successful, False otherwise
+    """
+    # Validate code FIRST (before incrementing)
+    code_details = await validate_invite_code(code)
+    if not code_details:
+        return False
+
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Increment uses_count
+            await cur.execute(
+                """
+                UPDATE invite_codes
+                SET uses_count = uses_count + 1
+                WHERE code = %s
+                """,
+                (code,)
+            )
+
+            # Activate user with appropriate subscription
+            trial_days = code_details['trial_days']
+            tier = code_details['tier']
+
+            if trial_days > 0:
+                # Set trial subscription
+                from datetime import timedelta
+                end_date = datetime.now() + timedelta(days=trial_days)
+                await cur.execute(
+                    """
+                    UPDATE users
+                    SET subscription_status = 'trial',
+                        subscription_tier = %s,
+                        subscription_start_date = NOW(),
+                        subscription_end_date = %s,
+                        activated_at = NOW(),
+                        invite_code_used = %s
+                    WHERE telegram_id = %s
+                    """,
+                    (tier, end_date, code, telegram_id)
+                )
+            else:
+                # Set active subscription (no expiry)
+                await cur.execute(
+                    """
+                    UPDATE users
+                    SET subscription_status = 'active',
+                        subscription_tier = %s,
+                        subscription_start_date = NOW(),
+                        activated_at = NOW(),
+                        invite_code_used = %s
+                    WHERE telegram_id = %s
+                    """,
+                    (tier, code, telegram_id)
+                )
+
+            await conn.commit()
+            logger.info(f"User {telegram_id} activated with code {code}")
+            return True
+
+
+async def get_user_subscription_status(telegram_id: str) -> Optional[dict]:
+    """Get user's subscription status"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT subscription_status, subscription_tier, subscription_start_date,
+                       subscription_end_date, activated_at, invite_code_used
+                FROM users
+                WHERE telegram_id = %s
+                """,
+                (telegram_id,)
+            )
+            result = await cur.fetchone()
+
+            if not result:
+                return None
+
+            status, tier, start_date, end_date, activated_at, code_used = result
+
+            return {
+                'status': status,
+                'tier': tier,
+                'start_date': start_date,
+                'end_date': end_date,
+                'activated_at': activated_at,
+                'invite_code_used': code_used
+            }
+
+
+# ==========================================
+# Onboarding State Management
+# ==========================================
+
+async def get_onboarding_state(user_id: str) -> Optional[dict]:
+    """Get current onboarding state for user"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT onboarding_path, current_step, step_data,
+                       completed_steps, started_at, completed_at, last_interaction_at
+                FROM user_onboarding_state
+                WHERE user_id = %s
+                """,
+                (user_id,)
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+
+async def start_onboarding(user_id: str, path: str) -> None:
+    """Initialize onboarding state for a user"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO user_onboarding_state (user_id, onboarding_path, current_step)
+                VALUES (%s, %s, 'path_selection')
+                ON CONFLICT (user_id) DO UPDATE SET
+                    onboarding_path = EXCLUDED.onboarding_path,
+                    current_step = 'path_selection',
+                    started_at = CURRENT_TIMESTAMP,
+                    last_interaction_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, path)
+            )
+            await conn.commit()
+    logger.info(f"Started onboarding for {user_id} on path: {path}")
+
+
+async def update_onboarding_step(
+    user_id: str,
+    new_step: str,
+    step_data: dict = None,
+    mark_complete: str = None
+) -> None:
+    """Update user's current onboarding step and optionally mark previous step complete"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            if mark_complete:
+                # Mark previous step as complete and advance
+                await cur.execute(
+                    """
+                    UPDATE user_onboarding_state
+                    SET current_step = %s,
+                        step_data = %s,
+                        completed_steps = array_append(completed_steps, %s),
+                        last_interaction_at = CURRENT_TIMESTAMP
+                    WHERE user_id = %s
+                    """,
+                    (new_step, json.dumps(step_data or {}), mark_complete, user_id)
+                )
+            else:
+                # Just update current step
+                await cur.execute(
+                    """
+                    UPDATE user_onboarding_state
+                    SET current_step = %s,
+                        step_data = %s,
+                        last_interaction_at = CURRENT_TIMESTAMP
+                    WHERE user_id = %s
+                    """,
+                    (new_step, json.dumps(step_data or {}), user_id)
+                )
+            await conn.commit()
+    logger.info(f"Updated onboarding step for {user_id}: {new_step}")
+
+
+async def complete_onboarding(user_id: str) -> None:
+    """Mark onboarding as completed"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE user_onboarding_state
+                SET current_step = 'completed',
+                    completed_at = CURRENT_TIMESTAMP,
+                    last_interaction_at = CURRENT_TIMESTAMP
+                WHERE user_id = %s
+                """,
+                (user_id,)
+            )
+            await conn.commit()
+    logger.info(f"Completed onboarding for {user_id}")
+
+
+async def log_feature_discovery(
+    user_id: str,
+    feature_name: str,
+    discovery_method: str = "contextual"
+) -> None:
+    """Log when a user discovers a feature"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO feature_discovery_log
+                (user_id, feature_name, discovery_method)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id, feature_name) DO NOTHING
+                """,
+                (user_id, feature_name, discovery_method)
+            )
+            await conn.commit()
+    logger.info(f"Logged feature discovery: {user_id} -> {feature_name}")
+
+
+async def log_feature_usage(user_id: str, feature_name: str) -> None:
+    """Log when a user actually uses a feature"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO feature_discovery_log
+                (user_id, feature_name, first_used_at, usage_count, last_used_at)
+                VALUES (%s, %s, CURRENT_TIMESTAMP, 1, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id, feature_name)
+                DO UPDATE SET
+                    first_used_at = COALESCE(feature_discovery_log.first_used_at, CURRENT_TIMESTAMP),
+                    usage_count = feature_discovery_log.usage_count + 1,
+                    last_used_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, feature_name)
+            )
+            await conn.commit()
+    logger.info(f"Logged feature usage: {user_id} used {feature_name}")
+
+
+# Sleep entry operations
+async def save_sleep_entry(entry: SleepEntry) -> None:
+    """Save sleep quiz entry to database"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO sleep_entries
+                (id, user_id, logged_at, bedtime, sleep_latency_minutes, wake_time,
+                 total_sleep_hours, night_wakings, sleep_quality_rating, disruptions,
+                 phone_usage, phone_duration_minutes, alertness_rating)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    entry.id,
+                    entry.user_id,
+                    entry.logged_at,
+                    str(entry.bedtime),  # Convert time to string for psycopg
+                    entry.sleep_latency_minutes,
+                    str(entry.wake_time),  # Convert time to string for psycopg
+                    entry.total_sleep_hours,
+                    entry.night_wakings,
+                    entry.sleep_quality_rating,
+                    json.dumps(entry.disruptions),  # Convert list to JSON
+                    entry.phone_usage,
+                    entry.phone_duration_minutes,
+                    entry.alertness_rating
+                )
+            )
+            await conn.commit()
+    logger.info(f"Saved sleep entry for user {entry.user_id}")
+
+
+async def get_sleep_entries(user_id: str, days: int = 7) -> list[dict]:
+    """Get recent sleep entries for user"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, user_id, logged_at, bedtime, sleep_latency_minutes, wake_time,
+                       total_sleep_hours, night_wakings, sleep_quality_rating, disruptions,
+                       phone_usage, phone_duration_minutes, alertness_rating
+                FROM sleep_entries
+                WHERE user_id = %s AND logged_at > NOW() - INTERVAL '%s days'
+                ORDER BY logged_at DESC
+                """,
+                (user_id, days)
+            )
+            rows = await cur.fetchall()
+
+            if not rows:
+                return []
+
+            # Get column names
+            columns = [desc[0] for desc in cur.description]
+
+            # Convert rows to list of dicts
+            return [dict(zip(columns, row)) for row in rows]
+
+
+# ==========================================
+# Reminder Completion Functions
+# ==========================================
+
+async def save_reminder_completion(
+    reminder_id: str,
+    user_id: str,
+    scheduled_time: str,
+    notes: Optional[str] = None
+) -> None:
+    """
+    Save reminder completion with actual completion timestamp
+
+    Args:
+        reminder_id: UUID of the reminder that was completed
+        user_id: Telegram user ID
+        scheduled_time: Original scheduled time of reminder (e.g., "08:00")
+        notes: Optional notes from user
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Convert scheduled_time string to timestamp (use today's date + scheduled time)
+            from datetime import datetime, time as time_type
+
+            # Parse scheduled time (HH:MM format)
+            try:
+                hour, minute = map(int, scheduled_time.split(":"))
+                today = datetime.now().date()
+                scheduled_datetime = datetime.combine(today, time_type(hour, minute))
+            except (ValueError, AttributeError):
+                # If parsing fails, use current time as fallback
+                scheduled_datetime = datetime.now()
+
+            await cur.execute(
+                """
+                INSERT INTO reminder_completions
+                (reminder_id, user_id, scheduled_time, notes)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (reminder_id, user_id, scheduled_datetime, notes)
+            )
+            await conn.commit()
+
+    logger.info(f"Saved reminder completion for user {user_id}, reminder {reminder_id}")
+
+
+async def get_reminder_completions(
+    user_id: str,
+    reminder_id: Optional[str] = None,
+    days: int = 30
+) -> list[dict]:
+    """
+    Get reminder completion history
+
+    Args:
+        user_id: Telegram user ID
+        reminder_id: Optional specific reminder UUID to filter by
+        days: Number of days of history to retrieve
+
+    Returns:
+        List of completion records with scheduled_time and completed_at
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            if reminder_id:
+                # Get completions for specific reminder
+                await cur.execute(
+                    """
+                    SELECT id, reminder_id, user_id, scheduled_time, completed_at, notes
+                    FROM reminder_completions
+                    WHERE user_id = %s AND reminder_id = %s
+                    AND completed_at > NOW() - INTERVAL '%s days'
+                    ORDER BY completed_at DESC
+                    """,
+                    (user_id, reminder_id, days)
+                )
+            else:
+                # Get all completions for user
+                await cur.execute(
+                    """
+                    SELECT id, reminder_id, user_id, scheduled_time, completed_at, notes
+                    FROM reminder_completions
+                    WHERE user_id = %s
+                    AND completed_at > NOW() - INTERVAL '%s days'
+                    ORDER BY completed_at DESC
+                    """,
+                    (user_id, days)
+                )
+
+            rows = await cur.fetchall()
+
+            if not rows:
+                return []
+
+            # Get column names
+            columns = [desc[0] for desc in cur.description]
+
+            # Convert rows to list of dicts
+            return [dict(zip(columns, row)) for row in rows]

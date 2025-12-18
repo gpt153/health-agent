@@ -10,17 +10,27 @@ from src.models.food import VisionAnalysisResult, FoodItem, FoodMacros
 logger = logging.getLogger(__name__)
 
 
-async def analyze_food_photo(photo_path: str) -> VisionAnalysisResult:
+async def analyze_food_photo(
+    photo_path: str,
+    caption: Optional[str] = None,
+    user_id: Optional[str] = None,
+    visual_patterns: Optional[str] = None
+) -> VisionAnalysisResult:
     """
     Analyze food photo using vision AI
 
     Args:
         photo_path: Path to the food photo
+        caption: Optional caption provided by user
+        user_id: User's ID for loading visual patterns
+        visual_patterns: Pre-loaded visual patterns (optional, for performance)
 
     Returns:
         VisionAnalysisResult with identified foods
     """
     logger.info(f"Analyzing food photo: {photo_path} with model {VISION_MODEL}")
+    if caption:
+        logger.info(f"User caption: {caption}")
 
     # Read and encode image
     with open(photo_path, "rb") as f:
@@ -28,16 +38,21 @@ async def analyze_food_photo(photo_path: str) -> VisionAnalysisResult:
 
     # Route to appropriate vision API
     if VISION_MODEL.startswith("openai:"):
-        return await analyze_with_openai(image_data, photo_path)
+        return await analyze_with_openai(image_data, photo_path, caption, visual_patterns)
     elif VISION_MODEL.startswith("anthropic:"):
-        return await analyze_with_anthropic(image_data, photo_path)
+        return await analyze_with_anthropic(image_data, photo_path, caption, visual_patterns)
     else:
         logger.error(f"Unknown vision model: {VISION_MODEL}")
         # Fallback to mock data
         return _get_mock_result()
 
 
-async def analyze_with_openai(image_data: str, photo_path: str) -> VisionAnalysisResult:
+async def analyze_with_openai(
+    image_data: str,
+    photo_path: str,
+    caption: Optional[str] = None,
+    visual_patterns: Optional[str] = None
+) -> VisionAnalysisResult:
     """Use OpenAI Vision API (GPT-4o-mini)"""
     try:
         from openai import AsyncOpenAI
@@ -51,6 +66,58 @@ async def analyze_with_openai(image_data: str, photo_path: str) -> VisionAnalysi
         file_ext = Path(photo_path).suffix.lower()
         media_type = "image/jpeg" if file_ext in [".jpg", ".jpeg"] else "image/png"
 
+        # Build prompt with caption and visual patterns
+        if caption:
+            prompt_text = f"""CRITICAL INSTRUCTIONS - READ CAREFULLY:
+
+The user provided this description: "{caption}"
+
+**This description is the ABSOLUTE TRUTH. Use it exactly as written.**
+
+LANGUAGE HANDLING:
+- The caption may be in ANY language (English, Swedish, Spanish, etc.)
+- Translate food names to English for the response
+- Common Swedish foods: "kvarg" = quark, "keso" = cottage cheese, "fil" = filmjölk/soured milk
+
+QUANTITY RULES - EXTREMELY IMPORTANT:
+- If the user specifies grams (e.g., "170g"), use EXACTLY that amount
+- If they say "2 eggs", log EXACTLY 2 eggs
+- If they list multiple items, log ALL of them separately
+- NEVER estimate or guess quantities when the user provided exact amounts
+
+Analyze this food photo and return a JSON response with:
+1. foods: Array of food items with:
+   - name: Food name in English
+   - quantity: EXACT quantity from user's description (e.g., "170g", "2 eggs")
+   - calories: Accurate estimate based on EXACT quantity
+   - macros: protein, carbs, fat in grams (accurate for the EXACT quantity)
+
+2. confidence: "high" (if caption is detailed), "medium", or "low"
+3. clarifying_questions: Only if critical information is missing
+
+TIME/DATE EXTRACTION:
+- If the caption mentions WHEN the food was eaten (e.g., "yesterday", "igår", "at 11pm", "kl23"), extract this
+- Common phrases: "yesterday"/"igår" = previous day, "kl" = time (Swedish), "at" = time marker
+- Return as "timestamp" in ISO format if mentioned, or null if not
+
+EXAMPLE 1:
+Caption: "170g kvarg and 170g keso"
+Response: {{"foods": [...], "confidence": "high", "timestamp": null}}
+
+EXAMPLE 2:
+Caption: "Igår kl23 åt jag 170g kvarg och 170g keso"
+Response: {{"foods": [...], "confidence": "high", "timestamp": "2024-12-14T23:00:00"}}"""
+        else:
+            prompt_text = """Analyze this food photo and return a JSON response with:
+1. foods: Array of food items with name, quantity (estimate), calories (estimate), and macros (protein, carbs, fat in grams)
+2. confidence: "high", "medium", or "low"
+3. clarifying_questions: Array of questions to improve accuracy
+
+Be specific about portion sizes and provide nutritional estimates."""
+
+        if visual_patterns:
+            prompt_text += f"\n\nUser's known food patterns:\n{visual_patterns}\nCheck if this matches any known items."
+
         # Prepare vision prompt
         response = await client.chat.completions.create(
             model=model_name,
@@ -60,12 +127,7 @@ async def analyze_with_openai(image_data: str, photo_path: str) -> VisionAnalysi
                     "content": [
                         {
                             "type": "text",
-                            "text": """Analyze this food photo and return a JSON response with:
-1. foods: Array of food items with name, quantity (estimate), calories (estimate), and macros (protein, carbs, fat in grams)
-2. confidence: "high", "medium", or "low"
-3. clarifying_questions: Array of questions to improve accuracy
-
-Be specific about portion sizes and provide nutritional estimates."""
+                            "text": prompt_text
                         },
                         {
                             "type": "image_url",
@@ -108,10 +170,20 @@ Be specific about portion sizes and provide nutritional estimates."""
             for item in data.get("foods", [])
         ]
 
+        # Parse timestamp if provided
+        from datetime import datetime
+        timestamp = None
+        if data.get("timestamp"):
+            try:
+                timestamp = datetime.fromisoformat(data["timestamp"])
+            except (ValueError, TypeError):
+                logger.warning(f"Failed to parse timestamp: {data.get('timestamp')}")
+
         return VisionAnalysisResult(
             foods=foods,
             confidence=data.get("confidence", "medium"),
-            clarifying_questions=data.get("clarifying_questions", [])
+            clarifying_questions=data.get("clarifying_questions", []),
+            timestamp=timestamp
         )
 
     except Exception as e:
@@ -119,7 +191,12 @@ Be specific about portion sizes and provide nutritional estimates."""
         return _get_mock_result()
 
 
-async def analyze_with_anthropic(image_data: str, photo_path: str) -> VisionAnalysisResult:
+async def analyze_with_anthropic(
+    image_data: str,
+    photo_path: str,
+    caption: Optional[str] = None,
+    visual_patterns: Optional[str] = None
+) -> VisionAnalysisResult:
     """Use Anthropic Claude 3.5 Sonnet Vision"""
     try:
         from anthropic import AsyncAnthropic
@@ -132,6 +209,58 @@ async def analyze_with_anthropic(image_data: str, photo_path: str) -> VisionAnal
         # Determine image format from file extension
         file_ext = Path(photo_path).suffix.lower()
         media_type = "image/jpeg" if file_ext in [".jpg", ".jpeg"] else "image/png"
+
+        # Build prompt with caption and visual patterns
+        if caption:
+            prompt_text = f"""CRITICAL INSTRUCTIONS - READ CAREFULLY:
+
+The user provided this description: "{caption}"
+
+**This description is the ABSOLUTE TRUTH. Use it exactly as written.**
+
+LANGUAGE HANDLING:
+- The caption may be in ANY language (English, Swedish, Spanish, etc.)
+- Translate food names to English for the response
+- Common Swedish foods: "kvarg" = quark, "keso" = cottage cheese, "fil" = filmjölk/soured milk
+
+QUANTITY RULES - EXTREMELY IMPORTANT:
+- If the user specifies grams (e.g., "170g"), use EXACTLY that amount
+- If they say "2 eggs", log EXACTLY 2 eggs
+- If they list multiple items, log ALL of them separately
+- NEVER estimate or guess quantities when the user provided exact amounts
+
+Analyze this food photo and return a JSON response with:
+1. foods: Array of food items with:
+   - name: Food name in English
+   - quantity: EXACT quantity from user's description (e.g., "170g", "2 eggs")
+   - calories: Accurate estimate based on EXACT quantity
+   - macros: protein, carbs, fat in grams (accurate for the EXACT quantity)
+
+2. confidence: "high" (if caption is detailed), "medium", or "low"
+3. clarifying_questions: Only if critical information is missing
+
+TIME/DATE EXTRACTION:
+- If the caption mentions WHEN the food was eaten (e.g., "yesterday", "igår", "at 11pm", "kl23"), extract this
+- Common phrases: "yesterday"/"igår" = previous day, "kl" = time (Swedish), "at" = time marker
+- Return as "timestamp" in ISO format if mentioned, or null if not
+
+EXAMPLE 1:
+Caption: "170g kvarg and 170g keso"
+Response: {{"foods": [...], "confidence": "high", "timestamp": null}}
+
+EXAMPLE 2:
+Caption: "Igår kl23 åt jag 170g kvarg och 170g keso"
+Response: {{"foods": [...], "confidence": "high", "timestamp": "2024-12-14T23:00:00"}}"""
+        else:
+            prompt_text = """Analyze this food photo and return a JSON response with:
+1. foods: Array of food items with name, quantity (estimate), calories (estimate), and macros (protein, carbs, fat in grams)
+2. confidence: "high", "medium", or "low"
+3. clarifying_questions: Array of questions to improve accuracy
+
+Be specific about portion sizes and provide nutritional estimates."""
+
+        if visual_patterns:
+            prompt_text += f"\n\nUser's known food patterns:\n{visual_patterns}\nCheck if this matches any known items."
 
         # Prepare vision prompt
         response = await client.messages.create(
@@ -151,12 +280,7 @@ async def analyze_with_anthropic(image_data: str, photo_path: str) -> VisionAnal
                         },
                         {
                             "type": "text",
-                            "text": """Analyze this food photo and return a JSON response with:
-1. foods: Array of food items with name, quantity (estimate), calories (estimate), and macros (protein, carbs, fat in grams)
-2. confidence: "high", "medium", or "low"
-3. clarifying_questions: Array of questions to improve accuracy
-
-Be specific about portion sizes and provide nutritional estimates."""
+                            "text": prompt_text
                         }
                     ]
                 }
@@ -192,10 +316,20 @@ Be specific about portion sizes and provide nutritional estimates."""
             for item in data.get("foods", [])
         ]
 
+        # Parse timestamp if provided
+        from datetime import datetime
+        timestamp = None
+        if data.get("timestamp"):
+            try:
+                timestamp = datetime.fromisoformat(data["timestamp"])
+            except (ValueError, TypeError):
+                logger.warning(f"Failed to parse timestamp: {data.get('timestamp')}")
+
         return VisionAnalysisResult(
             foods=foods,
             confidence=data.get("confidence", "medium"),
-            clarifying_questions=data.get("clarifying_questions", [])
+            clarifying_questions=data.get("clarifying_questions", []),
+            timestamp=timestamp
         )
 
     except Exception as e:

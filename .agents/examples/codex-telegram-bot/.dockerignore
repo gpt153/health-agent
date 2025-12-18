@@ -1,0 +1,35 @@
+# Node modules (will be installed fresh in container)
+node_modules/
+npm-debug.log
+
+# Build output (will be built in container)
+dist/
+
+# Environment files
+.env
+.env.local
+
+# Session data
+telegram_sessions/
+
+# Workspace
+workspace/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# Documentation
+*.md
+!README.md
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# TypeScript cache
+*.tsbuildinfo

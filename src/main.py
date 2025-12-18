@@ -40,6 +40,13 @@ async def main() -> None:
         logger.info("Bot is running. Press Ctrl+C to stop.")
         await app.initialize()
         await app.start()
+
+        # Load reminders from database (after bot is started)
+        from src.bot import reminder_manager
+        if reminder_manager:
+            logger.info("Loading reminders from database...")
+            await reminder_manager.load_reminders()
+
         await app.updater.start_polling()
 
         # Keep running until interrupted

@@ -9,6 +9,13 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ALLOWED_TELEGRAM_IDS: list[str] = os.getenv("ALLOWED_TELEGRAM_IDS", "").split(",")
 
+# Topic filtering for shared groups with multiple bots
+# - 'all' (default): Respond to all topics and DMs
+# - 'none': Only respond to DMs, ignore all topics
+# - '123,456,789': Whitelist - only respond to listed topics (and DMs)
+# - '!123,456': Blacklist - respond to all topics EXCEPT these (and DMs)
+TELEGRAM_TOPIC_FILTER: str = os.getenv("TELEGRAM_TOPIC_FILTER", "all")
+
 # Database
 DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/health_agent")
 

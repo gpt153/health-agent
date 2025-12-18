@@ -18,19 +18,20 @@ services:
       timeout: 5s
       retries: 5
 
-  app:
-    build: .
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/health_agent
-      DATA_PATH: /app/data
-    env_file:
-      - .env
-    volumes:
-      - ./data:/app/data
-    restart: unless-stopped
+  # app:
+  #   build: .
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   environment:
+  #     DATABASE_URL: postgresql://postgres:postgres@postgres:5432/health_agent
+  #     DATA_PATH: /app/data
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - ./data:/app/data
+  #   restart: unless-stopped
+  # DISABLED - Running bot directly with .venv/bin/python instead
 
 volumes:
   postgres_data:

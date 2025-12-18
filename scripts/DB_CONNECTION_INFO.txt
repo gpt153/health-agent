@@ -1,0 +1,91 @@
+╔══════════════════════════════════════════════════════════════╗
+║           DATABASE CONNECTION INFORMATION                    ║
+║                Health Agent - PostgreSQL                     ║
+╚══════════════════════════════════════════════════════════════╝
+
+📊 CONNECTION DETAILS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Host:          localhost
+  Port:          5434
+  Database:      health_agent
+  Username:      postgres
+  Password:      postgres
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🗄️  TABLES OF INTEREST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  • mem0                    - Semantic memories (63 records)
+  • users                   - User accounts (3 users)
+  • food_entries            - Food logs (13 entries)
+  • conversation_history    - Chat history (46 messages)
+  • reminders               - Scheduled reminders (2 active)
+  • dynamic_tools           - Custom AI tools (5 tools)
+  • tracking_categories     - Custom metrics
+  • tracking_entries        - Tracked data
+  • invite_codes            - User invitations
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔌 CONNECTION STRINGS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PostgreSQL URL:
+  postgresql://postgres:postgres@localhost:5434/health_agent
+
+psql Command:
+  PGPASSWORD=postgres psql -h localhost -p 5434 -U postgres -d health_agent
+
+Connection String (app config):
+  host=localhost port=5434 dbname=health_agent user=postgres password=postgres
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🛠️  RECOMMENDED GUI TOOLS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. pgAdmin (Official PostgreSQL tool)
+   - Free, open source
+   - Most features
+   - Install: sudo apt install pgadmin4-desktop
+   - Or Docker: docker run -p 5050:80 -e PGADMIN_DEFAULT_EMAIL=admin@admin.com -e PGADMIN_DEFAULT_PASSWORD=admin -d dpage/pgadmin4
+
+2. DBeaver (Universal database tool)
+   - Free, cross-platform
+   - Great for analysis
+   - Download: https://dbeaver.io/
+
+3. Beekeeper Studio (Simple & clean)
+   - Free, open source
+   - Modern interface
+   - Download: https://www.beekeeperstudio.io/
+
+4. TablePlus (Mac/Windows/Linux)
+   - Beautiful UI
+   - Native performance
+   - Download: https://tableplus.com/
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📝 QUICK QUERIES FOR MEM0
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- View all memories for user 7376426503
+SELECT
+    payload->>'data' as memory,
+    payload->>'created_at' as created_at
+FROM mem0
+WHERE payload->>'user_id' = '7376426503'
+ORDER BY (payload->>'created_at')::timestamp DESC
+LIMIT 20;
+
+-- Search memories by keyword
+SELECT payload->>'data' as memory
+FROM mem0
+WHERE payload->>'user_id' = '7376426503'
+  AND payload->>'data' ILIKE '%training%';
+
+-- Count total memories
+SELECT COUNT(*) FROM mem0;
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📚 DOCUMENTATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  • scripts/PGADMIN_SETUP.md    - pgAdmin setup guide
+  • scripts/README_MEM0.md       - Mem0 viewing guide
+  • scripts/mem0_queries.sql     - Useful SQL queries
+  • scripts/view_mem0.py         - Python viewer script
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

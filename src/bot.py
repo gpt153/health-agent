@@ -4,7 +4,8 @@ from datetime import datetime
 from pathlib import Path
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from src.config import TELEGRAM_BOT_TOKEN, DATA_PATH
+import telegram.error
+from src.config import TELEGRAM_BOT_TOKEN, DATA_PATH, TELEGRAM_TOPIC_FILTER
 from src.utils.auth import is_authorized
 from src.db.queries import (
     create_user,
@@ -16,14 +17,19 @@ from src.db.queries import (
     approve_tool,
     reject_tool,
     get_tool_by_name,
+    get_pending_approvals,
 )
 from src.memory.file_manager import memory_manager
+from src.memory.mem0_manager import mem0_manager
 from src.agent import get_agent_response
 from src.agent.dynamic_tools import tool_manager
 from src.utils.vision import analyze_food_photo
+from src.utils.voice import transcribe_voice
 from src.models.food import FoodEntry
 from src.scheduler.reminder_manager import ReminderManager
-from src.utils.timezone_helper import detect_timezone_from_telegram
+from src.handlers.onboarding import handle_onboarding_start, handle_onboarding_message
+from src.handlers.sleep_quiz import sleep_quiz_handler
+from src.handlers.reminders import reminder_completion_handler
 
 logger = logging.getLogger(__name__)
 
@@ -31,16 +37,189 @@ logger = logging.getLogger(__name__)
 reminder_manager = None
 
 
+def should_process_message(update: Update) -> bool:
+    """
+    Check if message should be processed based on topic filter configuration.
+
+    IMPORTANT: Always process DMs (direct messages) regardless of filter.
+    Only apply filtering to group messages with topics.
+
+    Supports:
+    - 'all': Respond to all topics and DMs
+    - 'none': Only respond to DMs
+    - '10,20,30': Whitelist - only these topics (and DMs)
+    - '!10,20': Blacklist - all topics except these (and DMs)
+
+    Args:
+        update: Telegram update object
+
+    Returns:
+        True if message should be processed, False to ignore
+    """
+    # Always process if no message (shouldn't happen, but safety check)
+    if not update.message:
+        return True
+
+    # Check if this is a group/supergroup with a topic (message_thread_id present)
+    chat_type = update.message.chat.type
+    thread_id = update.message.message_thread_id
+
+    # DMs (private chats) - ALWAYS process regardless of filter
+    if chat_type == "private":
+        return True
+
+    # Check if blacklist mode (starts with !)
+    is_blacklist = TELEGRAM_TOPIC_FILTER.startswith("!")
+
+    # Group/supergroup without topic - process if filter is 'all', 'none', or blacklist mode
+    if chat_type in ("group", "supergroup") and not thread_id:
+        if TELEGRAM_TOPIC_FILTER in ("all", "none"):
+            return True
+        if is_blacklist:
+            # Blacklist mode - process general chat (it's not blacklisted)
+            return True
+        # Whitelist mode - ignore general chat
+        logger.info(f"Ignoring general chat message (topic whitelist: {TELEGRAM_TOPIC_FILTER})")
+        return False
+
+    # Group/supergroup with topic - apply filter
+    if chat_type in ("group", "supergroup") and thread_id:
+        # 'all' - respond to all topics
+        if TELEGRAM_TOPIC_FILTER == "all":
+            return True
+
+        # 'none' - ignore all topics (only DMs)
+        if TELEGRAM_TOPIC_FILTER == "none":
+            logger.info(f"Ignoring message in topic {thread_id} (filter: none)")
+            return False
+
+        if is_blacklist:
+            # Blacklist mode - parse excluded topics
+            excluded_str = TELEGRAM_TOPIC_FILTER[1:]  # Remove '!' prefix
+            excluded_topics = [int(t.strip()) for t in excluded_str.split(",") if t.strip()]
+            if thread_id in excluded_topics:
+                logger.info(f"Ignoring message in topic {thread_id} (blacklisted)")
+                return False
+            # Not blacklisted, process it
+            return True
+        else:
+            # Whitelist mode - check if this topic is allowed
+            allowed_topics = [int(t.strip()) for t in TELEGRAM_TOPIC_FILTER.split(",") if t.strip()]
+            if thread_id in allowed_topics:
+                return True
+            else:
+                logger.info(f"Ignoring message in topic {thread_id} (not in whitelist: {TELEGRAM_TOPIC_FILTER})")
+                return False
+
+    # Default: process the message
+    return True
+
+
+async def auto_save_user_info(user_id: str, user_message: str, agent_response: str) -> None:
+    """
+    Automatically analyze user message and save important information to memory.
+    This runs after every conversation to ensure nothing is lost.
+
+    Args:
+        user_id: Telegram user ID
+        user_message: What the user said
+        agent_response: What the agent responded (for context)
+    """
+    logger.info(f"[AUTO-SAVE] Starting analysis for user {user_id}")
+    logger.info(f"[AUTO-SAVE] User message: {user_message[:100]}...")
+
+    # Debug: Write flag file to confirm function is called
+    try:
+        with open("/tmp/autosave_called.txt", "a") as f:
+            from datetime import datetime
+            f.write(f"{datetime.now()}: User {user_id} - {user_message[:50]}\n")
+    except:
+        pass
+
+    try:
+        from openai import AsyncOpenAI
+        from src.config import OPENAI_API_KEY
+        import json
+
+        # Use a fast model for extraction
+        client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+
+        extraction_prompt = f"""Analyze this conversation and extract any personal information that should be permanently saved.
+
+USER MESSAGE: "{user_message}"
+AGENT RESPONSE: "{agent_response}"
+
+Extract information in these categories if present:
+- Medical: medications, supplements, injections, dosages, conditions, allergies
+- Training: exercise routines, training days, workout details
+- Sleep: sleep schedule, sleep quality, wake times
+- Nutrition: meal timing, eating windows, dietary preferences
+- Goals: fitness goals, target weights, timelines
+- Lifestyle: work schedule, stress, energy levels
+- Health Events: injuries, illnesses, symptoms
+- Psychology: motivations, challenges, emotional state
+- Schedule: recurring events, routines
+
+Return JSON with this structure:
+{{
+  "has_info": true/false,
+  "extractions": [
+    {{"category": "Category Name", "information": "detailed information"}},
+    ...
+  ]
+}}
+
+If there's no personal information worth saving permanently, return {{"has_info": false, "extractions": []}}.
+
+IMPORTANT:
+- Only extract information ABOUT THE USER (not general advice)
+- Be specific and detailed
+- Include context (days, times, amounts)
+- Respond in the same language as user input
+- Return valid JSON only"""
+
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": extraction_prompt}],
+            temperature=0.3,
+            max_tokens=500
+        )
+
+        content = response.choices[0].message.content.strip()
+
+        # Parse JSON response
+        if content.startswith("```json"):
+            content = content.split("```json")[1].split("```")[0].strip()
+        elif content.startswith("```"):
+            content = content.split("```")[1].split("```")[0].strip()
+
+        result = json.loads(content)
+
+        logger.info(f"[AUTO-SAVE] Extraction result: has_info={result.get('has_info')}, extractions={len(result.get('extractions', []))}")
+
+        if result.get("has_info") and result.get("extractions"):
+            for extraction in result["extractions"]:
+                category = extraction.get("category", "General Information")
+                info = extraction.get("information", "")
+
+                if info:
+                    # Save directly to memory
+                    await memory_manager.save_observation(user_id, category, info)
+                    logger.info(f"[AUTO-SAVE] Saved to '{category}': {info[:50]}...")
+
+    except Exception as e:
+        logger.error(f"Auto-save failed: {e}", exc_info=True)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /start command"""
+    """Handle /start command - now with onboarding"""
     user_id = str(update.effective_user.id)
 
-    # Check authorization
-    if not is_authorized(user_id):
-        logger.warning(f"Unauthorized access attempt from {user_id}")
+    # Check topic filter
+    if not should_process_message(update):
         return
 
-    # Create user in database
+    # Create user in database if doesn't exist (with pending status)
     if not await user_exists(user_id):
         await create_user(user_id)
         await memory_manager.create_user_files(user_id)
@@ -53,21 +232,145 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await memory_manager.update_preferences(user_id, "timezone", detected_timezone)
         logger.info(f"Set timezone for new user {user_id}: {detected_timezone}")
 
-    welcome_message = """👋 Welcome to your AI Health Coach!
+    # Check if user is activated
+    from src.db.queries import get_user_subscription_status, get_onboarding_state
+    subscription = await get_user_subscription_status(user_id)
 
-I can help you:
-🍽️ Track food by sending me photos
+    if not subscription or subscription['status'] == 'pending':
+        # User needs to activate with invite code
+        pending_message = """👋 Welcome to AI Health Coach!
+
+⚠️ **Activation Required**
+
+To use this bot, you need an invite code.
+Send your invite code to activate your account.
+
+Example: `HEALTH2024`
+
+Don't have a code? Contact the admin to request one."""
+        await update.message.reply_text(pending_message)
+        return
+
+    # User is activated, check onboarding status
+    onboarding = await get_onboarding_state(user_id)
+
+    if not onboarding or not onboarding.get('completed_at'):
+        # Start onboarding flow
+        await handle_onboarding_start(update, context)
+    else:
+        # Already completed onboarding, show standard welcome
+        welcome_message = f"""👋 Welcome back to your AI Health Coach!
+
+✅ **Account Status:** {subscription['status'].title()} ({subscription['tier']})
+
+Send me a food photo, ask me anything, or type /help for commands!"""
+
+        await update.message.reply_text(welcome_message)
+
+
+async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /activate command or direct code input"""
+    user_id = str(update.effective_user.id)
+
+    # Check topic filter
+    if not should_process_message(update):
+        return
+
+    # Ensure user exists in database
+    if not await user_exists(user_id):
+        await create_user(user_id)
+        await memory_manager.create_user_files(user_id)
+
+    # Get the invite code from command args or message text
+    message_text = update.message.text.strip()
+    code = None
+
+    if message_text.startswith('/activate '):
+        # Command format: /activate CODE
+        code = message_text.split(' ', 1)[1].strip() if len(message_text.split(' ')) > 1 else None
+    else:
+        # Direct code input (handled by handle_message)
+        code = message_text
+
+    if not code:
+        await update.message.reply_text(
+            "⚠️ Please provide an invite code.\n\n"
+            "Usage: `/activate YOUR_CODE` or just send the code directly."
+        )
+        return
+
+    # Validate and use the invite code
+    from src.db.queries import validate_invite_code, use_invite_code
+
+    code_details = await validate_invite_code(code)
+
+    if not code_details:
+        await update.message.reply_text(
+            "❌ **Invalid invite code**\n\n"
+            "This code is either:\n"
+            "• Not valid\n"
+            "• Already used up\n"
+            "• Expired\n\n"
+            "Please check your code or contact the admin for a new one."
+        )
+        return
+
+    # Use the code to activate user
+    success = await use_invite_code(code, user_id)
+
+    if not success:
+        await update.message.reply_text(
+            "❌ **Activation failed**\n\n"
+            "There was a problem activating your account. Please contact support."
+        )
+        return
+
+    # Success! User is now activated
+    tier = code_details['tier']
+    trial_days = code_details['trial_days']
+
+    if trial_days > 0:
+        success_message = f"""✅ **Account Activated!**
+
+🎉 Welcome to AI Health Coach!
+
+**Your Subscription:**
+• Tier: {tier.title()}
+• Status: Trial
+• Duration: {trial_days} days
+
+You now have full access to all features:
+🍽️ Track food with photo analysis
 📊 Monitor your progress
-💪 Stay motivated with personalized coaching
+💪 Get personalized coaching
 
-**Commands:**
-/transparency - See what I know about you
-/settings - View your preferences
-/help - Get help
+**Get Started:**
+Send me a food photo or chat with me about your health goals!
 
-Send me a food photo to get started, or just chat with me about your health goals!"""
+/help - See all commands
+/settings - Adjust your preferences"""
+    else:
+        success_message = f"""✅ **Account Activated!**
 
-    await update.message.reply_text(welcome_message)
+🎉 Welcome to AI Health Coach!
+
+**Your Subscription:**
+• Tier: {tier.title()}
+• Status: Active
+
+You now have full access to all features:
+🍽️ Track food with photo analysis
+📊 Monitor your progress
+💪 Get personalized coaching
+
+**Get Started:**
+Send me a food photo or chat with me about your health goals!
+
+/help - See all commands
+/settings - Adjust your preferences"""
+
+    await update.message.reply_text(success_message)
+    logger.info(f"User {user_id} successfully activated with code {code}")
 
 
 async def transparency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -75,7 +378,7 @@ async def transparency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user_id = str(update.effective_user.id)
 
     # Check authorization
-    if not is_authorized(user_id):
+    if not await is_authorized(user_id):
         return
 
     try:
@@ -127,7 +430,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     user_id = str(update.effective_user.id)
 
     # Check authorization
-    if not is_authorized(user_id):
+    if not await is_authorized(user_id):
         return
 
     try:
@@ -167,7 +470,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user_id = str(update.effective_user.id)
 
     # Check authorization
-    if not is_authorized(user_id):
+    if not await is_authorized(user_id):
         return
 
     help_text = """🤖 **AI Health Coach Help**
@@ -203,7 +506,7 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user_id = str(update.effective_user.id)
 
     # Check authorization
-    if not is_authorized(user_id):
+    if not await is_authorized(user_id):
         return
 
     try:
@@ -224,7 +527,7 @@ async def approve_tool_command(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = str(update.effective_user.id)
 
     # Check authorization
-    if not is_authorized(user_id):
+    if not await is_authorized(user_id):
         return
 
     # Check if user is admin (first user in allowed list)
@@ -263,7 +566,7 @@ async def reject_tool_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = str(update.effective_user.id)
 
     # Check authorization
-    if not is_authorized(user_id):
+    if not await is_authorized(user_id):
         return
 
     # Check if user is admin (first user in allowed list)
@@ -294,37 +597,172 @@ async def reject_tool_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"Error: {str(e)}")
 
 
+async def pending_approvals_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show pending tool approval requests"""
+    user_id = str(update.effective_user.id)
+
+    # Check authorization
+    if not await is_authorized(user_id):
+        return
+
+    # Check if user is admin (first user in allowed list)
+    from src.config import ALLOWED_TELEGRAM_IDS
+    if not ALLOWED_TELEGRAM_IDS or user_id != ALLOWED_TELEGRAM_IDS[0]:
+        await update.message.reply_text("⛔ Only admins can view pending approvals")
+        return
+
+    try:
+        pending = await get_pending_approvals()
+
+        if not pending:
+            await update.message.reply_text("✅ No pending approvals")
+            return
+
+        response_lines = ["📋 **Pending Tool Approvals**\n"]
+
+        for i, approval in enumerate(pending, 1):
+            response_lines.append(f"**{i}. {approval['tool_name']}**")
+            response_lines.append(f"   Type: {approval['tool_type']}")
+            response_lines.append(f"   Description: {approval['description']}")
+            response_lines.append(f"   Requested by: {approval['requested_by']}")
+            response_lines.append(f"   Approval ID: `{approval['approval_id']}`")
+            response_lines.append(f"   Commands:")
+            response_lines.append(f"   - `/approve_tool {approval['approval_id']}`")
+            response_lines.append(f"   - `/reject_tool {approval['approval_id']}`")
+            response_lines.append("")
+
+        response = "\n".join(response_lines)
+        await update.message.reply_text(response, parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"Error getting pending approvals: {e}", exc_info=True)
+        await update.message.reply_text(f"Error: {str(e)}")
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle text messages"""
     user_id = str(update.effective_user.id)
 
-    # Check authorization
-    if not is_authorized(user_id):
+    # Check topic filter
+    if not should_process_message(update):
         return
 
     text = update.message.text
     logger.info(f"Message from {user_id}: {text[:50]}...")
+
+    # Check if user is pending activation
+    from src.db.queries import get_user_subscription_status, get_onboarding_state
+    subscription = await get_user_subscription_status(user_id)
+
+    if subscription and subscription['status'] == 'pending':
+        # User is pending, check if message looks like an invite code
+        # Invite codes are typically uppercase alphanumeric, 6-20 chars
+        message_clean = text.strip().upper()
+        if len(message_clean) >= 4 and len(message_clean) <= 50 and message_clean.replace(' ', '').isalnum():
+            # Looks like a code, try to activate
+            await activate(update, context)
+            return
+        else:
+            # Not a code, remind user to activate
+            await update.message.reply_text(
+                "⚠️ **Please activate your account first**\n\n"
+                "Send your invite code to start using the bot.\n\n"
+                "Example: `HEALTH2024`\n\n"
+                "Don't have a code? Use /start to get more information."
+            )
+            return
+
+    # Check if user is in onboarding
+    onboarding = await get_onboarding_state(user_id)
+    if onboarding and not onboarding.get('completed_at'):
+        # Route to onboarding handler
+        await handle_onboarding_message(update, context)
+        return
+
+    # Check authorization (for active users)
+    if not await is_authorized(user_id):
+        return
+
+    # Check if user has timezone set (first-time setup)
+    from src.utils.timezone_helper import get_timezone_from_profile, suggest_timezones_for_language, update_timezone_in_profile
+    import pytz
+
+    user_timezone = get_timezone_from_profile(user_id)
+    if not user_timezone:
+        # Check if message looks like a timezone string (e.g., "America/New_York")
+        if '/' in text and len(text.split()) == 1:
+            try:
+                # Validate timezone
+                pytz.timezone(text.strip())
+                # Valid timezone - set it
+                if update_timezone_in_profile(user_id, text.strip()):
+                    await update.message.reply_text(
+                        f"✅ Great! Your timezone is now set to **{text.strip()}**.\n\n"
+                        f"You can start using the bot normally now!",
+                        parse_mode="Markdown"
+                    )
+                    return
+            except:
+                pass  # Not a valid timezone, show setup message
+
+        # New user - ask for timezone with smart suggestions
+        language_code = update.effective_user.language_code or 'en'
+        suggested_timezones = suggest_timezones_for_language(language_code)
+
+        timezone_list = "\n".join([f"• {tz}" for tz in suggested_timezones[:3]])
+
+        await update.message.reply_text(
+            f"👋 **Welcome! Let's set up your timezone first.**\n\n"
+            f"Based on your language ({language_code}), I suggest:\n{timezone_list}\n\n"
+            f"**Two ways to set your timezone:**\n"
+            f"1️⃣ Share your location (📎 → Location) - I'll detect it automatically\n"
+            f"2️⃣ Reply with your timezone (e.g., \"Europe/Stockholm\", \"America/New_York\")\n\n"
+            f"This helps me give you accurate time-based responses!",
+            parse_mode="Markdown"
+        )
+        return
 
     # Get AI response using PydanticAI agent
     try:
         # Send typing indicator
         await update.message.chat.send_action("typing")
 
-        # Load conversation history from database (last 20 messages = 10 turns)
+        # Load conversation history from database (auto-filters unhelpful "I don't know" responses)
         message_history = await get_conversation_history(user_id, limit=20)
 
         # Get agent response with conversation history
+        # Pass context.application for approval notifications
         response = await get_agent_response(
-            user_id, text, memory_manager, reminder_manager, message_history
+            user_id, text, memory_manager, reminder_manager, message_history,
+            bot_application=context.application
         )
 
         # Save user message and assistant response to database
         await save_conversation_message(user_id, "user", text, message_type="text")
         await save_conversation_message(user_id, "assistant", response, message_type="text")
 
-        # Send response
-        await update.message.reply_text(response)
-        logger.info(f"Sent AI response to {user_id}")
+        # Add to Mem0 for semantic memory and automatic fact extraction
+        mem0_manager.add_message(user_id, text, role="user", metadata={"message_type": "text"})
+        mem0_manager.add_message(user_id, response, role="assistant", metadata={"message_type": "text"})
+
+        # Auto-save: Extract and save any personal information from the conversation
+        logger.info(f"[DEBUG-FLOW] BEFORE auto_save_user_info for user {user_id}")
+        logger.info(f"[DEBUG-FLOW] User message: {text[:100]}")
+        logger.info(f"[DEBUG-FLOW] Agent response: {response[:100]}")
+        await auto_save_user_info(user_id, text, response)
+        logger.info(f"[DEBUG-FLOW] AFTER auto_save_user_info completed successfully")
+
+        # Send response - try with Markdown first, fallback to plain text if parsing fails
+        try:
+            await update.message.reply_text(response, parse_mode="Markdown")
+            logger.info(f"Sent AI response to {user_id}")
+        except telegram.error.BadRequest as e:
+            if "can't parse entities" in str(e).lower():
+                # Markdown parsing failed, send as plain text
+                logger.warning(f"Markdown parse error, sending as plain text: {e}")
+                await update.message.reply_text(response)
+            else:
+                raise
 
     except Exception as e:
         logger.error(f"Error in handle_message: {e}", exc_info=True)
@@ -338,7 +776,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user_id = str(update.effective_user.id)
 
     # Check authorization
-    if not is_authorized(user_id):
+    if not await is_authorized(user_id):
+        return
+
+    # Check topic filter
+    if not should_process_message(update):
         return
 
     logger.info(f"Photo received from {user_id}")
@@ -362,11 +804,31 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         logger.info(f"Photo saved to {photo_path}")
 
-        # Analyze with vision AI
-        analysis = await analyze_food_photo(str(photo_path))
+        # Get caption if provided
+        caption = update.message.caption
+        if caption:
+            logger.info(f"Photo caption received: {caption}")
+        else:
+            logger.info("No caption provided with photo")
+
+        # Load user's visual patterns for better recognition
+        user_memory = await memory_manager.load_user_memory(user_id)
+        visual_patterns = user_memory.get("visual_patterns", "")
+
+        # Analyze with vision AI (with caption and visual patterns)
+        analysis = await analyze_food_photo(
+            str(photo_path),
+            caption=caption,
+            user_id=user_id,
+            visual_patterns=visual_patterns
+        )
 
         # Build response message
-        response_lines = ["🍽️ **Food Analysis:**\n"]
+        response_lines = ["🍽️ **Food Analysis:**"]
+        if caption:
+            response_lines.append(f"_Based on your description: \"{caption}\"_\n")
+        else:
+            response_lines.append("")
 
         for food in analysis.foods:
             response_lines.append(f"• {food.name} ({food.quantity})")
@@ -398,9 +860,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             fat=total_fat
         )
 
+        # Use extracted timestamp from caption if available, otherwise current time
+        entry_timestamp = analysis.timestamp if analysis.timestamp else datetime.now()
+
         entry = FoodEntry(
             user_id=user_id,
-            timestamp=datetime.now(),
+            timestamp=entry_timestamp,
             photo_path=str(photo_path),
             foods=analysis.foods,
             total_calories=total_calories,
@@ -411,6 +876,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         await save_food_entry(entry)
         logger.info(f"Saved food entry for {user_id}")
+
+        # Log feature usage
+        from src.db.queries import log_feature_usage
+        await log_feature_usage(user_id, "food_tracking")
 
         # Send response
         response = "\n".join(response_lines)
@@ -438,6 +907,132 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
 
 
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle voice notes by transcribing and processing as text"""
+    user_id = str(update.effective_user.id)
+
+    # Check topic filter
+    if not should_process_message(update):
+        return
+
+    # Check if user is pending activation
+    from src.db.queries import get_user_subscription_status
+    subscription = await get_user_subscription_status(user_id)
+
+    if subscription and subscription['status'] == 'pending':
+        await update.message.reply_text(
+            "⚠️ **Please activate your account first**\n\n"
+            "Send your invite code to start using the bot."
+        )
+        return
+
+    # Check authorization
+    if not await is_authorized(user_id):
+        return
+
+    logger.info(f"Voice note received from {user_id}")
+
+    try:
+        # Send processing indicator
+        await update.message.reply_text("🎤 Transcribing your voice note...")
+        await update.message.chat.send_action("typing")
+
+        # Download voice file
+        voice = update.message.voice
+        file = await voice.get_file()
+
+        # Save voice to temp directory
+        voice_dir = DATA_PATH / user_id / "voice"
+        voice_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        voice_path = voice_dir / f"{timestamp}.ogg"
+        await file.download_to_drive(voice_path)
+
+        logger.info(f"Voice note saved to {voice_path}")
+
+        # Transcribe voice to text
+        transcribed_text = await transcribe_voice(str(voice_path))
+        logger.info(f"Transcribed: {transcribed_text[:100]}...")
+
+        # Log feature usage
+        from src.db.queries import log_feature_usage
+        await log_feature_usage(user_id, "voice_notes")
+
+        # Load conversation history (auto-filters unhelpful "I don't know" responses)
+        message_history = await get_conversation_history(user_id, limit=20)
+
+        # Get AI response using the transcribed text
+        response = await get_agent_response(
+            user_id, transcribed_text, memory_manager, reminder_manager, message_history,
+            bot_application=context.application
+        )
+
+        # Save voice message and response to database
+        voice_metadata = {
+            "transcription": transcribed_text,
+            "duration_seconds": voice.duration
+        }
+        await save_conversation_message(
+            user_id, "user", transcribed_text, message_type="voice", metadata=voice_metadata
+        )
+        await save_conversation_message(user_id, "assistant", response, message_type="text")
+
+        # Auto-save: Extract and save any personal information
+        await auto_save_user_info(user_id, transcribed_text, response)
+
+        # Send transcription and response
+        await update.message.reply_text(
+            f"📝 _You said: \"{transcribed_text}\"_\n\n{response}",
+            parse_mode="Markdown"
+        )
+        logger.info(f"Sent voice response to {user_id}")
+
+    except Exception as e:
+        logger.error(f"Error in handle_voice: {e}", exc_info=True)
+        await update.message.reply_text(
+            "Sorry, I had trouble processing your voice note. Please try again or send a text message!"
+        )
+
+
+async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle location sharing to auto-detect timezone"""
+    user_id = str(update.effective_user.id)
+
+    try:
+        location = update.message.location
+        latitude = location.latitude
+        longitude = location.longitude
+
+        logger.info(f"Received location from {user_id}: ({latitude}, {longitude})")
+
+        # Detect timezone from coordinates
+        from src.utils.timezone_helper import get_timezone_from_coordinates, update_timezone_in_profile
+
+        detected_timezone = get_timezone_from_coordinates(latitude, longitude)
+
+        # Update user's profile
+        success = update_timezone_in_profile(user_id, detected_timezone)
+
+        if success:
+            await update.message.reply_text(
+                f"✅ Thanks! I've detected your timezone as **{detected_timezone}**.\n\n"
+                f"I'll now use this for all time-based responses. You can update it anytime by sharing your location again!",
+                parse_mode="Markdown"
+            )
+            logger.info(f"Updated timezone for {user_id} to {detected_timezone}")
+        else:
+            await update.message.reply_text(
+                "❌ Sorry, I had trouble updating your timezone. Please try again!"
+            )
+
+    except Exception as e:
+        logger.error(f"Error in handle_location: {e}", exc_info=True)
+        await update.message.reply_text(
+            "Sorry, I had trouble processing your location. Please try again!"
+        )
+
+
 def create_bot_application() -> Application:
     """Create and configure the bot application"""
     global reminder_manager
@@ -450,16 +1045,28 @@ def create_bot_application() -> Application:
 
     # Add command handlers
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("activate", activate))
     app.add_handler(CommandHandler("transparency", transparency))
     app.add_handler(CommandHandler("settings", settings_command))
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("approve_tool", approve_tool_command))
     app.add_handler(CommandHandler("reject_tool", reject_tool_command))
+    app.add_handler(CommandHandler("pending_approvals", pending_approvals_command))
+
+    # Add conversation handlers (MUST be before message handlers)
+    app.add_handler(sleep_quiz_handler)
+    logger.info("Sleep quiz handler registered")
+
+    # Add callback query handlers
+    app.add_handler(reminder_completion_handler)
+    logger.info("Reminder completion handler registered")
 
     # Add message handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.LOCATION, handle_location))
 
     logger.info("Bot application created")
     return app

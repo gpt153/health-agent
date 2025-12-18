@@ -8,6 +8,7 @@ python-telegram-bot[job-queue]>=22.5
 # Database
 psycopg[binary]>=3.1.0
 psycopg-pool>=3.1.0
+mem0ai>=0.1.0  # Semantic memory with pgvector backend
 
 # Vision AI (choose one or both)
 openai>=1.0.0
