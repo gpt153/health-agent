@@ -164,6 +164,118 @@ class ReminderManager:
         logger.warning(f"Reminder not found: {job_name}")
         return False
 
+    async def schedule_sleep_quiz(
+        self, user_id: str, preferred_time: time, user_timezone: str = "UTC", language_code: str = "en"
+    ) -> None:
+        """
+        Schedule automated sleep quiz for a user.
+
+        Args:
+            user_id: Telegram user ID
+            preferred_time: Preferred time for quiz (user's local time)
+            user_timezone: IANA timezone string
+            language_code: User's language code for translations
+        """
+        try:
+            # Create timezone-aware time
+            tz = ZoneInfo(user_timezone)
+
+            # Handle both time objects and strings
+            if isinstance(preferred_time, str):
+                hour, minute = map(int, preferred_time.split(':')[:2])
+                scheduled_time = time(hour=hour, minute=minute, tzinfo=tz)
+            else:
+                scheduled_time = time(hour=preferred_time.hour, minute=preferred_time.minute, tzinfo=tz)
+
+            # Schedule daily job
+            self.job_queue.run_daily(
+                callback=self._send_sleep_quiz,
+                time=scheduled_time,
+                data={
+                    "user_id": user_id,
+                    "language_code": language_code,
+                    "scheduled_time": scheduled_time.strftime("%H:%M"),
+                    "timezone": user_timezone
+                },
+                name=f"sleep_quiz_{user_id}",
+            )
+
+            logger.info(
+                f"Scheduled sleep quiz for {user_id} at {scheduled_time.strftime('%H:%M')} {user_timezone}"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to schedule sleep quiz: {e}", exc_info=True)
+
+    async def _send_sleep_quiz(self, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Send automated sleep quiz to user"""
+        data = context.job.data
+        user_id = data["user_id"]
+        language_code = data.get("language_code", "en")
+        scheduled_time_str = data.get("scheduled_time", "")
+
+        try:
+            from src.i18n.translations import t
+            from datetime import datetime
+
+            # Store scheduled time for pattern tracking
+            scheduled_time = datetime.now().replace(
+                hour=int(scheduled_time_str.split(':')[0]),
+                minute=int(scheduled_time_str.split(':')[1]),
+                second=0,
+                microsecond=0
+            )
+
+            # Store in bot_data for later reference in quiz completion
+            if not hasattr(context, 'bot_data'):
+                context.bot_data = {}
+            context.bot_data[f"sleep_quiz_scheduled_{user_id}"] = scheduled_time
+
+            # Send quiz trigger message with /sleep_quiz command hint
+            message = t('quiz_welcome', lang=language_code)
+            message += "\n\nTap /sleep_quiz to start!"
+
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=message,
+                parse_mode="Markdown"
+            )
+
+            logger.info(f"Sent automated sleep quiz trigger to {user_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to send sleep quiz: {e}", exc_info=True)
+
+    async def load_sleep_quiz_schedules(self) -> None:
+        """Load all enabled sleep quiz schedules from database (called on startup)"""
+        logger.info("Loading sleep quiz schedules from database...")
+
+        try:
+            from src.db.queries import get_all_enabled_sleep_quiz_users
+
+            users = await get_all_enabled_sleep_quiz_users()
+            scheduled_count = 0
+
+            for user in users:
+                user_id = user["user_id"]
+                preferred_time = user["preferred_time"]
+                timezone = user["timezone"]
+                language_code = user["language_code"]
+
+                await self.schedule_sleep_quiz(
+                    user_id=user_id,
+                    preferred_time=preferred_time,
+                    user_timezone=timezone,
+                    language_code=language_code
+                )
+
+                scheduled_count += 1
+
+            logger.info(f"Loaded and scheduled {scheduled_count} sleep quizzes")
+
+        except Exception as e:
+            logger.error(f"Failed to load sleep quiz schedules: {e}", exc_info=True)
+
     async def _send_tracking_reminder(self, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Send a tracking reminder to user"""
         data = context.job.data
