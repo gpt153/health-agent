@@ -673,12 +673,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
     # Check if user is in onboarding
-    # DISABLED: Onboarding check commented out for debugging
-    # onboarding = await get_onboarding_state(user_id)
-    # if onboarding and not onboarding.get('completed_at'):
-    #     # Route to onboarding handler
-    #     await handle_onboarding_message(update, context)
-    #     return
+    onboarding = await get_onboarding_state(user_id)
+    if onboarding and not onboarding.get('completed_at'):
+        # Route to onboarding handler
+        await handle_onboarding_message(update, context)
+        return
 
     # Check authorization (for active users)
     if not await is_authorized(user_id):
