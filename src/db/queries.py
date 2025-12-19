@@ -1112,3 +1112,497 @@ async def get_reminder_completions(
 
             # Convert rows to list of dicts
             return [dict(zip(columns, row)) for row in rows]
+
+
+# ==========================================
+# Reminder Skip Functions
+# ==========================================
+
+async def save_reminder_skip(
+    reminder_id: str,
+    user_id: str,
+    scheduled_time: str,
+    reason: Optional[str] = None,
+    notes: Optional[str] = None
+) -> None:
+    """
+    Save reminder skip with reason
+
+    Args:
+        reminder_id: UUID of the reminder that was skipped
+        user_id: Telegram user ID
+        scheduled_time: Original scheduled time (HH:MM format)
+        reason: Skip reason (sick, out_of_stock, doctor_advice, other)
+        notes: Optional additional notes
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Parse scheduled time
+            from datetime import datetime, time as time_type
+            try:
+                hour, minute = map(int, scheduled_time.split(":"))
+                today = datetime.now().date()
+                scheduled_datetime = datetime.combine(today, time_type(hour, minute))
+            except (ValueError, AttributeError):
+                scheduled_datetime = datetime.now()
+
+            await cur.execute(
+                """
+                INSERT INTO reminder_skips
+                (reminder_id, user_id, scheduled_time, reason, notes)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (reminder_id, user_id, scheduled_datetime, reason, notes)
+            )
+            await conn.commit()
+
+    logger.info(f"Saved reminder skip for user {user_id}, reminder {reminder_id}, reason={reason}")
+
+
+async def get_reminder_by_id(reminder_id: str) -> Optional[dict]:
+    """
+    Get reminder by UUID
+
+    Args:
+        reminder_id: Reminder UUID
+
+    Returns:
+        Reminder dict or None if not found
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM reminders WHERE id = %s",
+                (reminder_id,)
+            )
+            row = await cur.fetchone()
+
+            if not row:
+                return None
+
+            columns = [desc[0] for desc in cur.description]
+            return dict(zip(columns, row))
+
+
+# ==========================================
+# Streak Calculation Functions
+# ==========================================
+
+async def calculate_current_streak(user_id: str, reminder_id: str) -> int:
+    """
+    Calculate current streak for a reminder
+
+    A streak is maintained if the user completed the reminder on consecutive days.
+    Missing a day (no completion AND no skip) breaks the streak.
+
+    Args:
+        user_id: Telegram user ID
+        reminder_id: Reminder UUID
+
+    Returns:
+        Current streak count (days)
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Get all completions and skips, ordered by date
+            await cur.execute(
+                """
+                WITH combined AS (
+                    SELECT DATE(completed_at) as action_date, 'completed' as action_type
+                    FROM reminder_completions
+                    WHERE user_id = %s AND reminder_id = %s
+                    UNION
+                    SELECT DATE(skipped_at) as action_date, 'skipped' as action_type
+                    FROM reminder_skips
+                    WHERE user_id = %s AND reminder_id = %s
+                )
+                SELECT action_date, action_type
+                FROM combined
+                WHERE action_date >= CURRENT_DATE - INTERVAL '60 days'
+                ORDER BY action_date DESC
+                """,
+                (user_id, reminder_id, user_id, reminder_id)
+            )
+
+            rows = await cur.fetchall()
+            if not rows:
+                return 0
+
+            # Calculate streak from most recent backwards
+            from datetime import date, timedelta
+
+            streak = 0
+            expected_date = date.today()
+
+            for row in rows:
+                action_date = row[0]
+
+                # If we found action on expected date, increment streak
+                if action_date == expected_date:
+                    streak += 1
+                    expected_date -= timedelta(days=1)
+                elif action_date < expected_date:
+                    # Gap detected - streak broken
+                    break
+
+            return streak
+
+
+async def calculate_best_streak(user_id: str, reminder_id: str) -> int:
+    """
+    Calculate best (longest) streak for a reminder
+
+    Args:
+        user_id: Telegram user ID
+        reminder_id: Reminder UUID
+
+    Returns:
+        Best streak count (days)
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Get all completion/skip dates
+            await cur.execute(
+                """
+                WITH combined AS (
+                    SELECT DATE(completed_at) as action_date
+                    FROM reminder_completions
+                    WHERE user_id = %s AND reminder_id = %s
+                    UNION
+                    SELECT DATE(skipped_at) as action_date
+                    FROM reminder_skips
+                    WHERE user_id = %s AND reminder_id = %s
+                )
+                SELECT action_date
+                FROM combined
+                ORDER BY action_date ASC
+                """,
+                (user_id, reminder_id, user_id, reminder_id)
+            )
+
+            rows = await cur.fetchall()
+            if not rows:
+                return 0
+
+            # Find longest consecutive sequence
+            from datetime import timedelta
+
+            max_streak = 0
+            current_streak = 1
+
+            for i in range(1, len(rows)):
+                prev_date = rows[i-1][0]
+                curr_date = rows[i][0]
+
+                # Check if consecutive days
+                if (curr_date - prev_date).days == 1:
+                    current_streak += 1
+                    max_streak = max(max_streak, current_streak)
+                else:
+                    current_streak = 1
+
+            return max(max_streak, current_streak)
+
+
+# ============================================
+# Reminder Analytics Functions (Week 2)
+# ============================================
+
+async def get_reminder_analytics(
+    user_id: str,
+    reminder_id: str,
+    days: int = 30
+) -> dict:
+    """
+    Calculate comprehensive analytics for a reminder over specified period
+    
+    Args:
+        user_id: Telegram user ID
+        reminder_id: Reminder UUID
+        days: Number of days to analyze (default: 30)
+    
+    Returns:
+        dict with:
+        - completion_rate: Percentage (0-100)
+        - total_expected: Days reminder was active in period
+        - total_completions: Number of completions
+        - total_skips: Number of skips
+        - total_missed: Days with no action
+        - current_streak: Current consecutive days
+        - best_streak: Best streak in period
+        - average_delay_minutes: Average time after scheduled
+        - skip_reasons: Breakdown by reason
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Get reminder details
+            await cur.execute(
+                """
+                SELECT schedule, created_at
+                FROM reminders
+                WHERE id = %s AND user_id = %s AND active = true
+                """,
+                (reminder_id, user_id)
+            )
+            reminder_row = await cur.fetchone()
+            
+            if not reminder_row:
+                return {
+                    "error": "Reminder not found or inactive"
+                }
+            
+            schedule_json, created_at = reminder_row
+            
+            # Get completions in period
+            await cur.execute(
+                """
+                SELECT 
+                    DATE(completed_at) as completion_date,
+                    scheduled_time,
+                    completed_at
+                FROM reminder_completions
+                WHERE reminder_id = %s 
+                  AND user_id = %s
+                  AND completed_at >= CURRENT_DATE - INTERVAL '%s days'
+                ORDER BY completed_at DESC
+                """,
+                (reminder_id, user_id, days)
+            )
+            completions = await cur.fetchall()
+            
+            # Get skips in period
+            await cur.execute(
+                """
+                SELECT 
+                    DATE(skipped_at) as skip_date,
+                    reason,
+                    skipped_at
+                FROM reminder_skips
+                WHERE reminder_id = %s 
+                  AND user_id = %s
+                  AND skipped_at >= CURRENT_DATE - INTERVAL '%s days'
+                ORDER BY skipped_at DESC
+                """,
+                (reminder_id, user_id, days)
+            )
+            skips = await cur.fetchall()
+            
+            # Calculate statistics
+            total_completions = len(completions)
+            total_skips = len(skips)
+            total_expected = days  # Simplified - assumes daily reminder
+            total_actions = total_completions + total_skips
+            total_missed = max(0, total_expected - total_actions)
+            
+            completion_rate = (total_completions / total_expected * 100) if total_expected > 0 else 0
+            
+            # Calculate average delay (completions only)
+            delays = []
+            for completion in completions:
+                completion_date, scheduled_time, completed_at = completion
+                # Parse scheduled time (HH:MM format)
+                sched_hour, sched_min = map(int, scheduled_time.split(':'))
+                scheduled_datetime = completed_at.replace(
+                    hour=sched_hour, 
+                    minute=sched_min, 
+                    second=0, 
+                    microsecond=0
+                )
+                delay_seconds = (completed_at - scheduled_datetime).total_seconds()
+                delay_minutes = int(delay_seconds / 60)
+                delays.append(delay_minutes)
+            
+            average_delay_minutes = int(sum(delays) / len(delays)) if delays else 0
+            
+            # Skip reasons breakdown
+            skip_reasons = {}
+            for skip in skips:
+                _, reason, _ = skip
+                reason = reason or 'other'
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+            
+            # Get streaks (use existing functions)
+            current_streak = await calculate_current_streak(user_id, reminder_id)
+            best_streak = await calculate_best_streak(user_id, reminder_id)
+            
+            return {
+                "completion_rate": round(completion_rate, 1),
+                "total_expected": total_expected,
+                "total_completions": total_completions,
+                "total_skips": total_skips,
+                "total_missed": total_missed,
+                "current_streak": current_streak,
+                "best_streak": best_streak,
+                "average_delay_minutes": average_delay_minutes,
+                "skip_reasons": skip_reasons,
+                "period_days": days
+            }
+
+
+async def analyze_day_of_week_patterns(
+    user_id: str,
+    reminder_id: str,
+    days: int = 60
+) -> dict:
+    """
+    Analyze completion patterns by day of week
+    
+    Args:
+        user_id: Telegram user ID
+        reminder_id: Reminder UUID
+        days: Days of history to analyze (default: 60 for ~8 weeks)
+    
+    Returns:
+        dict with day names as keys (Monday-Sunday), each containing:
+        - completions: Count
+        - skips: Count
+        - missed: Count
+        - completion_rate: Percentage
+        - average_delay_minutes: Average delay for this day
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Get completions by day of week
+            await cur.execute(
+                """
+                SELECT 
+                    EXTRACT(DOW FROM completed_at) as dow,
+                    COUNT(*) as count,
+                    AVG(
+                        EXTRACT(EPOCH FROM (completed_at - 
+                            (DATE(completed_at) + (scheduled_time || ':00')::time)
+                        )) / 60
+                    ) as avg_delay_minutes
+                FROM reminder_completions
+                WHERE reminder_id = %s 
+                  AND user_id = %s
+                  AND completed_at >= CURRENT_DATE - INTERVAL '%s days'
+                GROUP BY EXTRACT(DOW FROM completed_at)
+                """,
+                (reminder_id, user_id, days)
+            )
+            completion_rows = await cur.fetchall()
+            
+            # Get skips by day of week
+            await cur.execute(
+                """
+                SELECT 
+                    EXTRACT(DOW FROM skipped_at) as dow,
+                    COUNT(*) as count
+                FROM reminder_skips
+                WHERE reminder_id = %s 
+                  AND user_id = %s
+                  AND skipped_at >= CURRENT_DATE - INTERVAL '%s days'
+                GROUP BY EXTRACT(DOW FROM skipped_at)
+                """,
+                (reminder_id, user_id, days)
+            )
+            skip_rows = await cur.fetchall()
+            
+            # Build day-of-week mapping
+            dow_names = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+            
+            # Initialize all days
+            patterns = {}
+            for dow_num, dow_name in enumerate(dow_names):
+                patterns[dow_name] = {
+                    "completions": 0,
+                    "skips": 0,
+                    "missed": 0,
+                    "completion_rate": 0.0,
+                    "average_delay_minutes": 0
+                }
+            
+            # Fill in completion data
+            for row in completion_rows:
+                dow_num = int(row[0])
+                count = row[1]
+                avg_delay = int(row[2]) if row[2] else 0
+                
+                dow_name = dow_names[dow_num]
+                patterns[dow_name]["completions"] = count
+                patterns[dow_name]["average_delay_minutes"] = avg_delay
+            
+            # Fill in skip data
+            for row in skip_rows:
+                dow_num = int(row[0])
+                count = row[1]
+                
+                dow_name = dow_names[dow_num]
+                patterns[dow_name]["skips"] = count
+            
+            # Calculate completion rates (simplified - assumes daily reminder)
+            # For more accuracy, would need to count actual scheduled days
+            weeks_analyzed = days / 7
+            for dow_name, stats in patterns.items():
+                expected_occurrences = int(weeks_analyzed)
+                total_actions = stats["completions"] + stats["skips"]
+                stats["missed"] = max(0, expected_occurrences - total_actions)
+                
+                if expected_occurrences > 0:
+                    stats["completion_rate"] = round(
+                        (stats["completions"] / expected_occurrences) * 100, 1
+                    )
+            
+            return patterns
+
+
+async def get_multi_reminder_comparison(
+    user_id: str,
+    days: int = 30
+) -> list[dict]:
+    """
+    Compare all user's tracked reminders
+    
+    Args:
+        user_id: Telegram user ID
+        days: Period to analyze (default: 30)
+    
+    Returns:
+        List of reminder summaries, each containing:
+        - reminder_id: UUID
+        - message: Reminder message
+        - completion_rate: Percentage
+        - current_streak: Current streak
+        - total_completions: Count
+        - total_skips: Count
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Get all active reminders with tracking enabled
+            await cur.execute(
+                """
+                SELECT id, message
+                FROM reminders
+                WHERE user_id = %s 
+                  AND active = true
+                  AND enable_completion_tracking = true
+                ORDER BY created_at DESC
+                """,
+                (user_id,)
+            )
+            reminders = await cur.fetchall()
+            
+            comparisons = []
+            
+            for reminder_row in reminders:
+                reminder_id, message = reminder_row
+                
+                # Get analytics for this reminder
+                analytics = await get_reminder_analytics(user_id, str(reminder_id), days)
+                
+                if "error" not in analytics:
+                    comparisons.append({
+                        "reminder_id": str(reminder_id),
+                        "message": message,
+                        "completion_rate": analytics["completion_rate"],
+                        "current_streak": analytics["current_streak"],
+                        "total_completions": analytics["total_completions"],
+                        "total_skips": analytics["total_skips"],
+                        "average_delay_minutes": analytics["average_delay_minutes"]
+                    })
+            
+            # Sort by completion rate (descending)
+            comparisons.sort(key=lambda x: x["completion_rate"], reverse=True)
+            
+            return comparisons
