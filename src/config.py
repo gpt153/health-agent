@@ -31,6 +31,10 @@ DATA_PATH: Path = Path(os.getenv("DATA_PATH", "./data"))
 # Logging
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
+# USDA Nutrition Database
+USDA_API_KEY: str = os.getenv("USDA_API_KEY", "DEMO_KEY")
+ENABLE_NUTRITION_VERIFICATION: bool = os.getenv("ENABLE_NUTRITION_VERIFICATION", "true").lower() == "true"
+
 # Validation
 def validate_config() -> None:
     """Validate required configuration"""
