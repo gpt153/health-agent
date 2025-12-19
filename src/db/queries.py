@@ -661,22 +661,29 @@ async def create_invite_code(
     max_uses: Optional[int] = None,
     tier: str = 'free',
     trial_days: int = 0,
-    expires_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None,
+    is_master_code: bool = False,
+    description: Optional[str] = None
 ) -> str:
-    """Create a new invite code"""
+    """Create a new invite code (supports master codes with unlimited uses)"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                INSERT INTO invite_codes (code, created_by, max_uses, tier, trial_days, expires_at)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO invite_codes (code, created_by, max_uses, tier, trial_days, expires_at, is_master_code, description)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (code, created_by, max_uses, tier, trial_days, expires_at)
+                (code, created_by, max_uses, tier, trial_days, expires_at, is_master_code, description)
             )
             result = await cur.fetchone()
             await conn.commit()
-            logger.info(f"Created invite code: {code}")
+
+            if is_master_code:
+                logger.info(f"Created MASTER CODE: {code} - {description}")
+            else:
+                logger.info(f"Created invite code: {code}")
+
             return str(result[0])
 
 
@@ -684,12 +691,13 @@ async def validate_invite_code(code: str) -> Optional[dict]:
     """
     Validate an invite code and return its details if valid
     Returns None if code is invalid, expired, or used up
+    Master codes bypass max_uses check and can be used indefinitely
     """
     async with db.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT id, code, max_uses, uses_count, tier, trial_days, expires_at, active
+                SELECT id, code, max_uses, uses_count, tier, trial_days, expires_at, active, is_master_code, description
                 FROM invite_codes
                 WHERE code = %s
                 """,
@@ -700,25 +708,33 @@ async def validate_invite_code(code: str) -> Optional[dict]:
             if not result:
                 return None
 
-            code_id, code_str, max_uses, uses_count, tier, trial_days, expires_at, active = result
+            code_id, code_str, max_uses, uses_count, tier, trial_days, expires_at, active, is_master_code, description = result
 
             # Check if code is active
             if not active:
+                logger.warning(f"Invite code {code} is inactive")
                 return None
 
             # Check if code has expired
             if expires_at and datetime.now() > expires_at:
+                logger.warning(f"Invite code {code} has expired")
                 return None
 
-            # Check if code has remaining uses
-            if max_uses is not None and uses_count >= max_uses:
-                return None
+            # Check if code has remaining uses (SKIP for master codes)
+            if not is_master_code:
+                if max_uses is not None and uses_count >= max_uses:
+                    logger.warning(f"Invite code {code} has reached max uses ({max_uses})")
+                    return None
+            else:
+                logger.info(f"Validating MASTER CODE: {code} (unlimited uses, current count: {uses_count})")
 
             return {
                 'id': str(code_id),
                 'code': code_str,
                 'tier': tier,
-                'trial_days': trial_days
+                'trial_days': trial_days,
+                'is_master_code': is_master_code,
+                'description': description
             }
 
 
@@ -726,6 +742,7 @@ async def use_invite_code(code: str, telegram_id: str) -> bool:
     """
     Mark invite code as used and activate user
     Returns True if successful, False otherwise
+    Supports both regular codes and master codes (unlimited uses)
     """
     # Validate code FIRST (before incrementing)
     code_details = await validate_invite_code(code)
@@ -740,9 +757,18 @@ async def use_invite_code(code: str, telegram_id: str) -> bool:
                 UPDATE invite_codes
                 SET uses_count = uses_count + 1
                 WHERE code = %s
+                RETURNING uses_count, is_master_code, max_uses
                 """,
                 (code,)
             )
+            usage_info = await cur.fetchone()
+
+            if usage_info:
+                uses_count, is_master_code, max_uses = usage_info
+                if is_master_code:
+                    logger.info(f"Master code {code} used (total uses: {uses_count}, unlimited)")
+                else:
+                    logger.info(f"Invite code {code} used ({uses_count}/{max_uses or 'unlimited'})")
 
             # Activate user with appropriate subscription
             trial_days = code_details['trial_days']
@@ -813,6 +839,51 @@ async def get_user_subscription_status(telegram_id: str) -> Optional[dict]:
                 'activated_at': activated_at,
                 'invite_code_used': code_used
             }
+
+
+async def get_master_codes() -> list:
+    """Get all active master codes"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT code, tier, trial_days, description, uses_count, created_at, active
+                FROM invite_codes
+                WHERE is_master_code = true
+                ORDER BY created_at DESC
+                """
+            )
+            return await cur.fetchall()
+
+
+async def deactivate_invite_code(code: str) -> bool:
+    """
+    Deactivate an invite code (sets active=false)
+    Used to disable compromised or unwanted codes
+    Returns True if successful, False if code not found
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE invite_codes
+                SET active = false
+                WHERE code = %s
+                RETURNING id, is_master_code
+                """,
+                (code,)
+            )
+            result = await cur.fetchone()
+            await conn.commit()
+
+            if result:
+                code_id, is_master = result
+                code_type = "MASTER CODE" if is_master else "invite code"
+                logger.warning(f"Deactivated {code_type}: {code}")
+                return True
+            else:
+                logger.warning(f"Attempted to deactivate non-existent code: {code}")
+                return False
 
 
 # ==========================================
