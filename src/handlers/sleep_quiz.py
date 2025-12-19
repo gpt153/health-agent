@@ -175,7 +175,7 @@ async def show_wake_time_question(update: Update, context: ContextTypes.DEFAULT_
             InlineKeyboardButton("", callback_data="noop"),
             InlineKeyboardButton("🔽", callback_data="wake_m_down"),
         ],
-        [InlineKeyboardButton(t(\'btn_confirm\', lang=lang), callback_data="wake_confirm")],
+        [InlineKeyboardButton(t('btn_confirm', lang=lang), callback_data="wake_confirm")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -225,9 +225,9 @@ async def show_night_wakings_question(update: Update, context: ContextTypes.DEFA
     
     lang = context.user_data['sleep_quiz_data'].get('lang', 'en')
     keyboard = [
-        [InlineKeyboardButton(t(\'wakings_no\', lang=lang), callback_data="wakings_0")],
-        [InlineKeyboardButton(t(\'wakings_1_2\', lang=lang), callback_data="wakings_1")],
-        [InlineKeyboardButton(t(\'wakings_3_plus\', lang=lang), callback_data="wakings_3")],
+        [InlineKeyboardButton(t('wakings_no', lang=lang), callback_data="wakings_0")],
+        [InlineKeyboardButton(t('wakings_1_2', lang=lang), callback_data="wakings_1")],
+        [InlineKeyboardButton(t('wakings_3_plus', lang=lang), callback_data="wakings_3")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -323,10 +323,10 @@ async def handle_phone_usage_callback(update: Update, context: ContextTypes.DEFA
         context.user_data['sleep_quiz_data']['phone_usage'] = True
         # Show follow-up duration question
         keyboard = [
-            [InlineKeyboardButton(t(\'phone_dur_less_15\', lang=lang), callback_data="phone_dur_7")],
+            [InlineKeyboardButton(t('phone_dur_less_15', lang=lang), callback_data="phone_dur_7")],
             [InlineKeyboardButton(t('latency_15_30', lang=lang), callback_data="phone_dur_22")],
             [InlineKeyboardButton(t('latency_30_60', lang=lang), callback_data="phone_dur_45")],
-            [InlineKeyboardButton(t(\'phone_dur_60_plus\', lang=lang), callback_data="phone_dur_90")],
+            [InlineKeyboardButton(t('phone_dur_60_plus', lang=lang), callback_data="phone_dur_90")],
         ]
         text = t('q6_duration', lang=lang)
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
@@ -366,30 +366,30 @@ async def show_disruptions_question(update: Update, context: ContextTypes.DEFAUL
 
     keyboard = [
         [InlineKeyboardButton(
-            ff"{'✅ ' if 'noise' in selected else ''}{t('disruption_noise', lang=lang)}",
+            f"{'✅ ' if 'noise' in selected else ''}{t('disruption_noise', lang=lang)}",
             callback_data="disrupt_noise"
         )],
         [InlineKeyboardButton(
-            ff"{'✅ ' if 'light' in selected else ''}{t('disruption_light', lang=lang)}",
+            f"{'✅ ' if 'light' in selected else ''}{t('disruption_light', lang=lang)}",
             callback_data="disrupt_light"
         )],
         [InlineKeyboardButton(
-            ff"{'✅ ' if 'temp' in selected else ''}{t('disruption_temp', lang=lang)}",
+            f"{'✅ ' if 'temp' in selected else ''}{t('disruption_temp', lang=lang)}",
             callback_data="disrupt_temp"
         )],
         [InlineKeyboardButton(
-            ff"{'✅ ' if 'stress' in selected else ''}{t('disruption_stress', lang=lang)}",
+            f"{'✅ ' if 'stress' in selected else ''}{t('disruption_stress', lang=lang)}",
             callback_data="disrupt_stress"
         )],
         [InlineKeyboardButton(
-            ff"{'✅ ' if 'dream' in selected else ''}{t('disruption_dream', lang=lang)}",
+            f"{'✅ ' if 'dream' in selected else ''}{t('disruption_dream', lang=lang)}",
             callback_data="disrupt_dream"
         )],
         [InlineKeyboardButton(
-            ff"{'✅ ' if 'pain' in selected else ''}{t('disruption_pain', lang=lang)}",
+            f"{'✅ ' if 'pain' in selected else ''}{t('disruption_pain', lang=lang)}",
             callback_data="disrupt_pain"
         )],
-        [InlineKeyboardButton(t(\'btn_done\', lang=lang), callback_data="disrupt_done")],
+        [InlineKeyboardButton(t('btn_done', lang=lang), callback_data="disrupt_done")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -431,15 +431,27 @@ async def handle_disruptions_callback(update: Update, context: ContextTypes.DEFA
 
 async def show_alertness_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Q8: Alertness rating - final question"""
-    
     lang = context.user_data['sleep_quiz_data'].get('lang', 'en')
+    # Get current selection if it exists
+    selected = context.user_data['sleep_quiz_data'].get('alertness_rating')
+
     keyboard = [
         [InlineKeyboardButton(str(i), callback_data=f"alert_{i}") for i in range(1, 6)],
         [InlineKeyboardButton(str(i), callback_data=f"alert_{i}") for i in range(6, 11)],
     ]
+
+    # Add submit button if a selection has been made
+    if selected:
+        keyboard.append([InlineKeyboardButton(t('btn_submit', lang=lang), callback_data="alert_submit")])
+
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    text = t('q8_alertness', lang=lang)
+    # Use translated text with dynamic content based on selection
+    if selected:
+        text = t('q8_alertness_selected', lang=lang, rating=selected)
+    else:
+        text = t('q8_alertness', lang=lang)
+
     await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
     return ALERTNESS
@@ -450,91 +462,127 @@ async def handle_alertness_callback(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     await query.answer()
 
-    alertness = int(query.data.replace("alert_", ""))
-    context.user_data['sleep_quiz_data']['alertness_rating'] = alertness
-
-    # Calculate total sleep duration
-    quiz_data = context.user_data['sleep_quiz_data']
-    lang = quiz_data.get('lang', 'en')
-    bedtime_str = quiz_data['bedtime']  # "22:00"
-    wake_str = quiz_data['wake_time']  # "07:00"
-    latency = quiz_data['sleep_latency_minutes']
-
-    # Parse times
-    bed_hour, bed_min = map(int, bedtime_str.split(':'))
-    wake_hour, wake_min = map(int, wake_str.split(':'))
-
-    # Calculate duration (handle overnight)
-    bed_total_min = bed_hour * 60 + bed_min
-    wake_total_min = wake_hour * 60 + wake_min
-    if wake_total_min < bed_total_min:
-        wake_total_min += 24 * 60  # Add 24 hours
-
-    sleep_minutes = wake_total_min - bed_total_min - latency
-    total_sleep_hours = sleep_minutes / 60.0
-
-    # Create SleepEntry
-    entry = SleepEntry(
-        id=str(uuid4()),
-        user_id=str(update.effective_user.id),
-        logged_at=datetime.now(),
-        bedtime=time_type(bed_hour, bed_min),
-        sleep_latency_minutes=latency,
-        wake_time=time_type(wake_hour, wake_min),
-        total_sleep_hours=round(total_sleep_hours, 2),
-        night_wakings=quiz_data.get('night_wakings', 0),
-        sleep_quality_rating=quiz_data['sleep_quality_rating'],
-        disruptions=quiz_data.get('disruptions', []),
-        phone_usage=quiz_data['phone_usage'],
-        phone_duration_minutes=quiz_data.get('phone_duration_minutes'),
-        alertness_rating=alertness
-    )
-
-    # Save to database
-    await save_sleep_entry(entry)
-
-    # Log feature usage
-    await log_feature_usage(entry.user_id, "sleep_tracking")
-
-    # Track submission for pattern learning
     try:
-        # Get scheduled time from bot_data (set by automated quiz trigger)
-        scheduled_time = context.bot_data.get(f"sleep_quiz_scheduled_{user_id}")
+        # Check if this is a number selection or submit button
+        if query.data == "alert_submit":
+            # User clicked submit - finalize the quiz
+            quiz_data = context.user_data.get('sleep_quiz_data', {})
+            lang = quiz_data.get('lang', 'en')
 
-        if scheduled_time:
-            # Calculate delay in minutes
-            from datetime import datetime
-            from uuid import uuid4
-            from src.db.queries import save_sleep_quiz_submission
-            from src.models.sleep_settings import SleepQuizSubmission
+            # Validate that alertness rating was selected
+            if 'alertness_rating' not in quiz_data:
+                await query.edit_message_text(
+                    t('error_select_rating', lang=lang),
+                    parse_mode="Markdown"
+                )
+                return await show_alertness_question(update, context)
 
-            submitted_at = datetime.now()
-            delay = int((submitted_at - scheduled_time).total_seconds() / 60)
+            alertness = quiz_data['alertness_rating']
+        else:
+            # User clicked a number - save selection and show submit button
+            alertness = int(query.data.replace("alert_", ""))
+            context.user_data['sleep_quiz_data']['alertness_rating'] = alertness
 
-            # Save submission pattern
-            submission = SleepQuizSubmission(
-                id=str(uuid4()),
-                user_id=user_id,
-                scheduled_time=scheduled_time,
-                submitted_at=submitted_at,
-                response_delay_minutes=delay
+            # Rebuild question with submit button
+            return await show_alertness_question(update, context)
+
+        # Validate required fields
+        quiz_data = context.user_data.get('sleep_quiz_data', {})
+        lang = quiz_data.get('lang', 'en')
+        required_fields = ['bedtime', 'wake_time', 'sleep_latency_minutes',
+                          'sleep_quality_rating', 'phone_usage']
+        missing_fields = [f for f in required_fields if f not in quiz_data]
+
+        if missing_fields:
+            logger.error(f"Missing quiz data fields: {missing_fields}")
+            await query.edit_message_text(
+                f"{t('error_incomplete', lang=lang)}\n\n"
+                f"Missing data: {', '.join(missing_fields)}",
+                parse_mode="Markdown"
             )
-            await save_sleep_quiz_submission(submission)
+            if 'sleep_quiz_data' in context.user_data:
+                del context.user_data['sleep_quiz_data']
+            return ConversationHandler.END
 
-            # Clear from bot_data
-            del context.bot_data[f"sleep_quiz_scheduled_{user_id}"]
+        # Calculate total sleep duration
+        bedtime_str = quiz_data['bedtime']  # "22:00"
+        wake_str = quiz_data['wake_time']  # "07:00"
+        latency = quiz_data['sleep_latency_minutes']
 
-            logger.info(f"Tracked submission pattern: {delay}min delay for {user_id}")
-    except Exception as e:
-        logger.error(f"Failed to track submission pattern: {e}", exc_info=True)
+        # Parse times
+        bed_hour, bed_min = map(int, bedtime_str.split(':'))
+        wake_hour, wake_min = map(int, wake_str.split(':'))
 
-    # Show summary
-    hours = int(total_sleep_hours)
-    minutes = int((total_sleep_hours % 1) * 60)
-    quality_emoji = "😊" if entry.sleep_quality_rating >= 8 else "😐" if entry.sleep_quality_rating >= 5 else "😫"
-    phone_usage_text = "Yes" if entry.phone_usage else "No"
+        # Calculate duration (handle overnight)
+        bed_total_min = bed_hour * 60 + bed_min
+        wake_total_min = wake_hour * 60 + wake_min
+        if wake_total_min < bed_total_min:
+            wake_total_min += 24 * 60  # Add 24 hours
 
-    summary = f"""{t('summary_title', lang=lang)}
+        sleep_minutes = wake_total_min - bed_total_min - latency
+        total_sleep_hours = sleep_minutes / 60.0
+
+        # Create SleepEntry
+        user_id = str(update.effective_user.id)
+        entry = SleepEntry(
+            id=str(uuid4()),
+            user_id=user_id,
+            logged_at=datetime.now(),
+            bedtime=time_type(bed_hour, bed_min),
+            sleep_latency_minutes=latency,
+            wake_time=time_type(wake_hour, wake_min),
+            total_sleep_hours=round(total_sleep_hours, 2),
+            night_wakings=quiz_data.get('night_wakings', 0),
+            sleep_quality_rating=quiz_data['sleep_quality_rating'],
+            disruptions=quiz_data.get('disruptions', []),
+            phone_usage=quiz_data['phone_usage'],
+            phone_duration_minutes=quiz_data.get('phone_duration_minutes'),
+            alertness_rating=alertness
+        )
+
+        # Save to database
+        await save_sleep_entry(entry)
+
+        # Log feature usage
+        await log_feature_usage(entry.user_id, "sleep_tracking")
+
+        # Track submission for pattern learning
+        try:
+            # Get scheduled time from bot_data (set by automated quiz trigger)
+            scheduled_time = context.bot_data.get(f"sleep_quiz_scheduled_{user_id}")
+
+            if scheduled_time:
+                # Calculate delay in minutes
+                from src.db.queries import save_sleep_quiz_submission
+                from src.models.sleep_settings import SleepQuizSubmission
+
+                submitted_at = datetime.now()
+                delay = int((submitted_at - scheduled_time).total_seconds() / 60)
+
+                # Save submission pattern
+                submission = SleepQuizSubmission(
+                    id=str(uuid4()),
+                    user_id=user_id,
+                    scheduled_time=scheduled_time,
+                    submitted_at=submitted_at,
+                    response_delay_minutes=delay
+                )
+                await save_sleep_quiz_submission(submission)
+
+                # Clear from bot_data
+                del context.bot_data[f"sleep_quiz_scheduled_{user_id}"]
+
+                logger.info(f"Tracked submission pattern: {delay}min delay for {user_id}")
+        except Exception as e:
+            logger.error(f"Failed to track submission pattern: {e}", exc_info=True)
+
+        # Show summary
+        hours = int(total_sleep_hours)
+        minutes = int((total_sleep_hours % 1) * 60)
+        quality_emoji = "😊" if entry.sleep_quality_rating >= 8 else "😐" if entry.sleep_quality_rating >= 5 else "😫"
+        phone_usage_text = t('yes', lang=lang) if entry.phone_usage else t('no', lang=lang)
+
+        summary = f"""{t('summary_title', lang=lang)}
 
 {t('summary_bedtime', lang=lang, time=bedtime_str)}
 {t('summary_latency', lang=lang, minutes=latency)}
@@ -547,19 +595,50 @@ async def handle_alertness_callback(update: Update, context: ContextTypes.DEFAUL
 
 {t('summary_tip', lang=lang, hours=hours, minutes=minutes)}"""
 
-    await query.edit_message_text(summary, parse_mode="Markdown")
+        await query.edit_message_text(summary, parse_mode="Markdown")
 
-    # Clean up quiz data
-    del context.user_data['sleep_quiz_data']
+        # Clean up quiz data
+        del context.user_data['sleep_quiz_data']
 
-    logger.info(f"Sleep quiz completed for user {entry.user_id}")
+        logger.info(f"Sleep quiz completed for user {entry.user_id}")
 
-    return ConversationHandler.END
+        return ConversationHandler.END
+
+    except KeyError as e:
+        logger.error(f"Missing quiz data key: {e}", exc_info=True)
+        await query.edit_message_text(
+            "❌ **Error:** Quiz data incomplete. Please start over with /sleep_quiz",
+            parse_mode="Markdown"
+        )
+        if 'sleep_quiz_data' in context.user_data:
+            del context.user_data['sleep_quiz_data']
+        return ConversationHandler.END
+
+    except ValueError as e:
+        logger.error(f"Invalid quiz data format: {e}", exc_info=True)
+        await query.edit_message_text(
+            "❌ **Error:** Invalid data format. Please start over with /sleep_quiz",
+            parse_mode="Markdown"
+        )
+        if 'sleep_quiz_data' in context.user_data:
+            del context.user_data['sleep_quiz_data']
+        return ConversationHandler.END
+
+    except Exception as e:
+        logger.error(f"Error completing sleep quiz: {e}", exc_info=True)
+        await query.edit_message_text(
+            "❌ **Error:** Failed to save sleep data. Please try again later.\n\n"
+            "If the problem persists, contact support.",
+            parse_mode="Markdown"
+        )
+        if 'sleep_quiz_data' in context.user_data:
+            del context.user_data['sleep_quiz_data']
+        return ConversationHandler.END
 
 
 async def cancel_sleep_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancel the sleep quiz"""
-    lang = \'en\'  # Default language for cancel message
+    lang = 'en'  # Default language for cancel message
     await update.message.reply_text(t('quiz_cancelled', lang=lang))
     if 'sleep_quiz_data' in context.user_data:
         del context.user_data['sleep_quiz_data']

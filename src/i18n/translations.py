@@ -22,13 +22,15 @@ TRANSLATIONS: Dict[str, Dict[str, Any]] = {
         "q6_phone": "**Q6/8: Did you use your phone/screen while in bed?**",
         "q6_duration": "**For how long?**",
         "q7_disruptions": "**Q7/8: What disrupted your sleep?** (Select all that apply)",
-        "q8_alertness": "**Q8/8: How tired/alert do you feel RIGHT NOW?**\n\n😴 1-2 = Exhausted\n😐 5-6 = Normal\n⚡ 9-10 = Wide awake",
+        "q8_alertness": "**Q8/8: How tired/alert do you feel RIGHT NOW?**\n\n😴 1-2 = Exhausted\n😐 5-6 = Normal\n⚡ 9-10 = Wide awake\n\n👉 _Select a number below_",
+        "q8_alertness_selected": "**Q8/8: How tired/alert do you feel RIGHT NOW?**\n\n😴 1-2 = Exhausted\n😐 5-6 = Normal\n⚡ 9-10 = Wide awake\n\n**Selected:** {rating}/10\n👉 _Click submit to complete, or select a different rating_",
 
         # Button labels
         "btn_confirm": "✅ Confirm",
         "btn_yes": "✅ Yes",
         "btn_no": "❌ No",
         "btn_done": "✅ Done",
+        "btn_submit": "✅ Submit",
         "latency_less_15": "Less than 15 min",
         "latency_15_30": "15-30 min",
         "latency_30_60": "30-60 min",
@@ -65,6 +67,14 @@ TRANSLATIONS: Dict[str, Dict[str, Any]] = {
         "summary_alertness": "😌 **Alertness:** {rating}/10",
         "summary_tip": "💡 **Tip:** You got {hours}h {minutes}m of sleep. Aim for 8-10h for optimal health!",
 
+        # Simple words
+        "yes": "Yes",
+        "no": "No",
+
+        # Errors
+        "error_select_rating": "❌ Error: Please select a rating before submitting.",
+        "error_incomplete": "❌ **Error:** Quiz data incomplete. Please start over with /sleep_quiz",
+
         # Settings
         "settings_title": "⚙️ **Sleep Quiz Settings**",
         "settings_enabled": "Quiz Status: {status}",
@@ -93,12 +103,14 @@ TRANSLATIONS: Dict[str, Dict[str, Any]] = {
         "q6_phone": "**F6/8: Använde du telefon/skärm i sängen?**",
         "q6_duration": "**Hur länge?**",
         "q7_disruptions": "**F7/8: Vad störde din sömn?** (Välj alla som gäller)",
-        "q8_alertness": "**F8/8: Hur trött/pigg känner du dig JUST NU?**\n\n😴 1-2 = Utmattad\n😐 5-6 = Normal\n⚡ 9-10 = Klarvaken",
+        "q8_alertness": "**F8/8: Hur trött/pigg känner du dig JUST NU?**\n\n😴 1-2 = Utmattad\n😐 5-6 = Normal\n⚡ 9-10 = Klarvaken\n\n👉 _Välj ett nummer nedan_",
+        "q8_alertness_selected": "**F8/8: Hur trött/pigg känner du dig JUST NU?**\n\n😴 1-2 = Utmattad\n😐 5-6 = Normal\n⚡ 9-10 = Klarvaken\n\n**Vald:** {rating}/10\n👉 _Klicka på skicka för att slutföra, eller välj ett annat betyg_",
 
         "btn_confirm": "✅ Bekräfta",
         "btn_yes": "✅ Ja",
         "btn_no": "❌ Nej",
         "btn_done": "✅ Klar",
+        "btn_submit": "✅ Skicka",
         "latency_less_15": "Mindre än 15 min",
         "latency_15_30": "15-30 min",
         "latency_30_60": "30-60 min",
@@ -133,6 +145,14 @@ TRANSLATIONS: Dict[str, Dict[str, Any]] = {
         "summary_alertness": "😌 **Pigghet:** {rating}/10",
         "summary_tip": "💡 **Tips:** Du sov {hours}h {minutes}m. Sikta på 8-10h för optimal hälsa!",
 
+        # Simple words
+        "yes": "Ja",
+        "no": "Nej",
+
+        # Errors
+        "error_select_rating": "❌ Fel: Välj ett betyg innan du skickar.",
+        "error_incomplete": "❌ **Fel:** Quiz-data ofullständig. Starta om med /sleep_quiz",
+
         "settings_title": "⚙️ **Inställningar för Sömnquiz**",
         "settings_enabled": "Status: {status}",
         "settings_time": "Schemalagd tid: {time} ({timezone})",
@@ -159,12 +179,14 @@ TRANSLATIONS: Dict[str, Dict[str, Any]] = {
         "q6_phone": "**P6/8: ¿Usaste tu teléfono/pantalla en la cama?**",
         "q6_duration": "**¿Por cuánto tiempo?**",
         "q7_disruptions": "**P7/8: ¿Qué interrumpió tu sueño?** (Selecciona todas las que apliquen)",
-        "q8_alertness": "**P8/8: ¿Qué tan cansado/alerta te sientes AHORA MISMO?**\n\n😴 1-2 = Agotado\n😐 5-6 = Normal\n⚡ 9-10 = Muy despierto",
+        "q8_alertness": "**P8/8: ¿Qué tan cansado/alerta te sientes AHORA MISMO?**\n\n😴 1-2 = Agotado\n😐 5-6 = Normal\n⚡ 9-10 = Muy despierto\n\n👉 _Selecciona un número abajo_",
+        "q8_alertness_selected": "**P8/8: ¿Qué tan cansado/alerta te sientes AHORA MISMO?**\n\n😴 1-2 = Agotado\n😐 5-6 = Normal\n⚡ 9-10 = Muy despierto\n\n**Seleccionado:** {rating}/10\n👉 _Haz clic en enviar para completar, o selecciona una calificación diferente_",
 
         "btn_confirm": "✅ Confirmar",
         "btn_yes": "✅ Sí",
         "btn_no": "❌ No",
         "btn_done": "✅ Listo",
+        "btn_submit": "✅ Enviar",
         "latency_less_15": "Menos de 15 min",
         "latency_15_30": "15-30 min",
         "latency_30_60": "30-60 min",
@@ -198,6 +220,14 @@ TRANSLATIONS: Dict[str, Dict[str, Any]] = {
         "summary_phone": "📱 **Uso de teléfono:** {usage}",
         "summary_alertness": "😌 **Alerta:** {rating}/10",
         "summary_tip": "💡 **Consejo:** Dormiste {hours}h {minutes}m. ¡Apunta a 8-10h para una salud óptima!",
+
+        # Simple words
+        "yes": "Sí",
+        "no": "No",
+
+        # Errors
+        "error_select_rating": "❌ Error: Por favor selecciona una calificación antes de enviar.",
+        "error_incomplete": "❌ **Error:** Datos del quiz incompletos. Empieza de nuevo con /sleep_quiz",
 
         "settings_title": "⚙️ **Configuración del Quiz de Sueño**",
         "settings_enabled": "Estado: {status}",
