@@ -29,6 +29,7 @@ from src.models.food import FoodEntry
 from src.scheduler.reminder_manager import ReminderManager
 from src.handlers.onboarding import handle_onboarding_start, handle_onboarding_message
 from src.handlers.sleep_quiz import sleep_quiz_handler
+from src.handlers.sleep_settings import sleep_settings_handler
 from src.handlers.reminders import (
     reminder_completion_handler,
     reminder_skip_handler,
@@ -1053,6 +1054,9 @@ def create_bot_application() -> Application:
     reminder_manager = ReminderManager(app)
     logger.info("ReminderManager initialized")
 
+    # Store reminder_manager in bot_data for access from handlers
+    app.bot_data['reminder_manager'] = reminder_manager
+
     # Add command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("activate", activate))
@@ -1067,6 +1071,9 @@ def create_bot_application() -> Application:
     # Add conversation handlers (MUST be before message handlers)
     app.add_handler(sleep_quiz_handler)
     logger.info("Sleep quiz handler registered")
+
+    app.add_handler(sleep_settings_handler)
+    logger.info("Sleep settings handler registered")
 
     # Add callback query handlers
     app.add_handler(reminder_completion_handler)

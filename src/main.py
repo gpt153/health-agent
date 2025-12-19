@@ -47,6 +47,10 @@ async def main() -> None:
             logger.info("Loading reminders from database...")
             await reminder_manager.load_reminders()
 
+            # Load sleep quiz schedules
+            logger.info("Loading sleep quiz schedules...")
+            await reminder_manager.load_sleep_quiz_schedules()
+
         await app.updater.start_polling()
 
         # Keep running until interrupted
