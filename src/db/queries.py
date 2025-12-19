@@ -676,7 +676,7 @@ async def create_invite_code(
             result = await cur.fetchone()
             await conn.commit()
             logger.info(f"Created invite code: {code}")
-            return str(result[0])
+            return str(result['id']) if result else None
 
 
 async def validate_invite_code(code: str) -> Optional[dict]:
