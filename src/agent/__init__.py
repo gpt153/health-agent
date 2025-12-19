@@ -989,7 +989,9 @@ async def generate_invite_code(
     count: int = 1,
     tier: str = 'free',
     trial_days: int = 7,
-    max_uses: Optional[int] = 1
+    max_uses: Optional[int] = 1,
+    is_master_code: bool = False,
+    description: Optional[str] = None
 ) -> InviteCodeResult:
     """
     **GENERATE INVITE CODES** - Use this when user says "generate invite code", "create code", "make invite code", or similar (ADMIN ONLY)
@@ -1001,12 +1003,15 @@ async def generate_invite_code(
     - "generate invite code" → Create 1 code
     - "generate 5 codes" → Create 5 codes
     - "create premium invite code" → Create code with premium tier
+    - "create master code for friends" → Create unlimited-use master code
 
     Args:
         count: Number of codes to generate (default: 1)
         tier: Subscription tier ('free', 'basic', 'premium') (default: 'free')
         trial_days: Number of trial days (0 = no trial, default: 7)
         max_uses: Max uses per code (None = unlimited, default: 1 for single-use)
+        is_master_code: If true, creates unlimited-use permanent code (ignores max_uses) (default: False)
+        description: Human-readable description for master codes (e.g., "Friends & Family")
 
     Returns:
         InviteCodeResult with generated code(s)
@@ -1052,6 +1057,16 @@ async def generate_invite_code(
                 message="❌ Trial days must be 0 or positive"
             )
 
+        # Master code handling
+        if is_master_code:
+            # Force unlimited uses for master codes
+            max_uses = None
+            # Default description if not provided
+            if description is None:
+                description = f"Master Code ({tier.title()} tier)"
+
+            logger.info(f"Admin {deps.telegram_id} creating MASTER CODE: {description}")
+
         # Word list for generating readable codes
         words = [
             'apple', 'beach', 'cloud', 'dance', 'eagle', 'flame', 'grape', 'house',
@@ -1078,11 +1093,16 @@ async def generate_invite_code(
                         created_by=deps.telegram_id,
                         max_uses=max_uses,
                         tier=tier,
-                        trial_days=trial_days
+                        trial_days=trial_days,
+                        is_master_code=is_master_code,
+                        description=description
                     )
 
                     codes.append(code)
-                    logger.info(f"Admin {deps.telegram_id} generated invite code: {code}")
+                    if is_master_code:
+                        logger.info(f"Admin {deps.telegram_id} generated MASTER CODE: {code}")
+                    else:
+                        logger.info(f"Admin {deps.telegram_id} generated invite code: {code}")
                     code_created = True
                     break  # Success, exit retry loop
 
@@ -1107,7 +1127,22 @@ async def generate_invite_code(
                 raise Exception(f"Failed to generate invite code {i + 1} of {count}")
 
         # Format response
-        if count == 1:
+        if is_master_code:
+            # Master code response format
+            message = f"""✅ **Master Code Created**
+
+🔑 **Code:** `{codes[0]}`
+📝 **Description:** {description}
+
+**Details:**
+• Type: **Master Code (Unlimited Uses)**
+• Tier: {tier.title()}
+• Trial: {trial_days} days
+• Expires: Never
+
+⚠️ This code can be reused indefinitely. Share only with trusted friends and family."""
+        elif count == 1:
+            # Single regular code
             message = f"""✅ **Invite Code Generated**
 
 📝 **Code:** `{codes[0]}`
@@ -1119,6 +1154,7 @@ async def generate_invite_code(
 
 Share this code with new users to activate their accounts."""
         else:
+            # Multiple regular codes
             codes_list = '\n'.join([f"• `{code}`" for code in codes])
             message = f"""✅ **{count} Invite Codes Generated**
 
