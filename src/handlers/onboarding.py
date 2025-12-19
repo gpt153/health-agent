@@ -517,7 +517,7 @@ async def handle_onboarding_message(update: Update, context: ContextTypes.DEFAUL
         state = await get_onboarding_state(user_id)
         step_data = state.get('step_data', {}) if state else {}
         step_data['timezone'] = tz
-        await update_onboarding_step(user_id, None, step_data=step_data)
+        await update_onboarding_step(user_id, "language_selection", step_data=step_data)
 
         # Ask language preference based on timezone
         await ask_language_preference(update, context, tz)
