@@ -30,7 +30,12 @@ from src.scheduler.reminder_manager import ReminderManager
 from src.handlers.onboarding import handle_onboarding_start, handle_onboarding_message
 from src.handlers.sleep_quiz import sleep_quiz_handler
 from src.handlers.sleep_settings import sleep_settings_handler
-from src.handlers.reminders import reminder_completion_handler
+from src.handlers.reminders import (
+    reminder_completion_handler,
+    reminder_skip_handler,
+    skip_reason_handler,
+    reminder_snooze_handler
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1072,7 +1077,10 @@ def create_bot_application() -> Application:
 
     # Add callback query handlers
     app.add_handler(reminder_completion_handler)
-    logger.info("Reminder completion handler registered")
+    app.add_handler(reminder_skip_handler)
+    app.add_handler(skip_reason_handler)
+    app.add_handler(reminder_snooze_handler)
+    logger.info("Reminder handlers registered (completion, skip, skip_reason, snooze)")
 
     # Add message handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

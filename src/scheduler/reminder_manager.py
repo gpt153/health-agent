@@ -297,7 +297,7 @@ class ReminderManager:
             logger.error(f"Failed to send tracking reminder: {e}", exc_info=True)
 
     async def _send_custom_reminder(self, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Send a custom reminder to user"""
+        """Send a custom reminder to user with completion tracking buttons"""
         data = context.job.data
         user_id = data["user_id"]
         message = data["message"]
@@ -305,33 +305,65 @@ class ReminderManager:
         scheduled_time = data.get("scheduled_time", "")
 
         try:
-            # Create inline keyboard with "Done" button
-            keyboard = None
+            # Get reminder from database to check tracking preference
+            from src.db.queries import get_reminder_by_id
+
+            enable_tracking = True  # Default
+            streak_count = 0
+
             if reminder_id:
-                # Include reminder_id and scheduled_time in callback data
-                # Format: reminder_done|{reminder_id}|{scheduled_time}
-                callback_data = f"reminder_done|{reminder_id}|{scheduled_time}"
+                reminder_data = await get_reminder_by_id(reminder_id)
+                if reminder_data:
+                    enable_tracking = reminder_data.get("enable_completion_tracking", True)
+
+                    # Calculate current streak if tracking enabled
+                    if enable_tracking:
+                        from src.db.queries import calculate_current_streak
+                        streak_count = await calculate_current_streak(user_id, reminder_id)
+
+            # Build message text
+            reminder_text = f"⏰ **Reminder**\n\n{message}"
+
+            # Add streak motivation if enabled and streak exists
+            if enable_tracking and streak_count > 0:
+                fire_emoji = "🔥" * min(streak_count, 3)  # Max 3 fire emojis
+                reminder_text += f"\n\n{fire_emoji} {streak_count}-day streak! Keep it going 💪"
+
+            # Create inline keyboard based on tracking preference
+            keyboard = None
+            if enable_tracking and reminder_id:
+                # Format: action|reminder_id|scheduled_time
+                done_data = f"reminder_done|{reminder_id}|{scheduled_time}"
+                skip_data = f"reminder_skip|{reminder_id}|{scheduled_time}"
+                snooze_data = f"reminder_snooze|{reminder_id}|{scheduled_time}"
+
                 keyboard = [
-                    [InlineKeyboardButton("✅ Done", callback_data=callback_data)]
+                    [
+                        InlineKeyboardButton("✅ Done", callback_data=done_data),
+                        InlineKeyboardButton("❌ Skip", callback_data=skip_data)
+                    ],
+                    [
+                        InlineKeyboardButton("⏰ Snooze 30m", callback_data=snooze_data)
+                    ]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
-                # Send reminder message with button
+                # Send with buttons
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=f"⏰ **Reminder**\n\n{message}",
+                    text=reminder_text,
                     parse_mode="Markdown",
                     reply_markup=reply_markup
                 )
             else:
-                # Send without button if no reminder_id (backward compatibility)
+                # Send without buttons (tracking disabled or no reminder_id)
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=f"⏰ **Reminder**\n\n{message}",
+                    text=reminder_text,
                     parse_mode="Markdown"
                 )
 
-            logger.info(f"Sent custom reminder to {user_id}")
+            logger.info(f"Sent custom reminder to {user_id} (tracking={enable_tracking}, streak={streak_count})")
 
         except Exception as e:
             logger.error(f"Failed to send custom reminder: {e}", exc_info=True)
