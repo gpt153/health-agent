@@ -36,6 +36,11 @@ from src.handlers.reminders import (
     skip_reason_handler,
     reminder_snooze_handler
 )
+from src.gamification.integrations import (
+    handle_food_entry_gamification,
+    handle_sleep_quiz_gamification,
+    handle_tracking_entry_gamification
+)
 
 logger = logging.getLogger(__name__)
 
@@ -888,9 +893,23 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await save_food_entry(entry)
         logger.info(f"Saved food entry for {user_id}")
 
+        # Process gamification (XP, streaks, achievements)
+        meal_type = entry.meal_type or "snack"  # Default if not set
+        gamification_result = await handle_food_entry_gamification(
+            user_id=user_id,
+            food_entry_id=entry.id,
+            logged_at=entry.timestamp,
+            meal_type=meal_type
+        )
+
         # Log feature usage
         from src.db.queries import log_feature_usage
         await log_feature_usage(user_id, "food_tracking")
+
+        # Add gamification to response if available
+        gamification_msg = gamification_result.get('message', '')
+        if gamification_msg:
+            response_lines.append(f"\n🎯 **PROGRESS**\n{gamification_msg}")
 
         # Send response
         response = "\n".join(response_lines)
