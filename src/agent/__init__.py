@@ -102,6 +102,15 @@ class RemindersListResult(BaseModel):
     reminders: list[dict]
 
 
+class ReminderStatisticsResult(BaseModel):
+    """Result of getting reminder statistics"""
+
+    success: bool
+    message: str
+    formatted_stats: Optional[str] = None
+    analytics: Optional[dict] = None
+
+
 class FoodSummaryResult(BaseModel):
     """Result of food summary query"""
 
@@ -568,6 +577,173 @@ async def get_user_reminders(ctx) -> RemindersListResult:
             success=False,
             message=f"Error: {str(e)}",
             reminders=[]
+        )
+
+
+@agent.tool
+async def get_reminder_statistics(
+    ctx,
+    reminder_description: str,
+    period: str = "month",
+    show_day_patterns: bool = False
+) -> ReminderStatisticsResult:
+    """
+    Get completion statistics for a specific reminder
+
+    Args:
+        reminder_description: Description or part of reminder message (e.g., "vitamin D", "medication")
+        period: Time period to analyze - "week" (7 days), "month" (30 days), "all" (60 days)
+        show_day_patterns: Whether to include day-of-week breakdown
+
+    Returns:
+        ReminderStatisticsResult with formatted statistics
+    """
+    deps: AgentDeps = ctx.deps
+
+    try:
+        from src.db.queries import (
+            get_active_reminders,
+            get_reminder_analytics,
+            analyze_day_of_week_patterns
+        )
+        from src.utils.reminder_formatters import (
+            format_reminder_statistics,
+            format_day_of_week_patterns
+        )
+
+        # Find reminder by description
+        reminders = await get_active_reminders(deps.telegram_id)
+
+        if not reminders:
+            return ReminderStatisticsResult(
+                success=False,
+                message="You have no active reminders. Create one first!",
+                formatted_stats=None,
+                analytics=None
+            )
+
+        # Find matching reminder (case-insensitive partial match)
+        description_lower = reminder_description.lower()
+        matching_reminder = None
+
+        for r in reminders:
+            message = r.get('message', '').lower()
+            if description_lower in message:
+                matching_reminder = r
+                break
+
+        if not matching_reminder:
+            # If no match, list available reminders
+            reminder_list = "\n".join([f"• {r.get('message')}" for r in reminders[:5]])
+            return ReminderStatisticsResult(
+                success=False,
+                message=f"No reminder found matching '{reminder_description}'.\n\nYour reminders:\n{reminder_list}",
+                formatted_stats=None,
+                analytics=None
+            )
+
+        # Map period to days
+        period_days = {
+            "week": 7,
+            "month": 30,
+            "all": 60
+        }.get(period.lower(), 30)
+
+        # Get analytics
+        reminder_id = matching_reminder['id']
+        reminder_message = matching_reminder['message']
+
+        analytics = await get_reminder_analytics(
+            user_id=deps.telegram_id,
+            reminder_id=str(reminder_id),
+            days=period_days
+        )
+
+        if "error" in analytics:
+            return ReminderStatisticsResult(
+                success=False,
+                message=analytics["error"],
+                formatted_stats=None,
+                analytics=None
+            )
+
+        # Format statistics
+        formatted_stats = format_reminder_statistics(analytics, reminder_message)
+
+        # Add day patterns if requested
+        if show_day_patterns:
+            patterns = await analyze_day_of_week_patterns(
+                user_id=deps.telegram_id,
+                reminder_id=str(reminder_id),
+                days=period_days
+            )
+            pattern_formatted = format_day_of_week_patterns(patterns, reminder_message)
+            formatted_stats += f"\n\n{pattern_formatted}"
+
+        return ReminderStatisticsResult(
+            success=True,
+            message=formatted_stats,
+            formatted_stats=formatted_stats,
+            analytics=analytics
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting reminder statistics: {e}", exc_info=True)
+        return ReminderStatisticsResult(
+            success=False,
+            message=f"Error retrieving statistics: {str(e)}",
+            formatted_stats=None,
+            analytics=None
+        )
+
+
+@agent.tool
+async def compare_all_reminders(ctx, period: str = "month") -> ReminderStatisticsResult:
+    """
+    Compare completion rates across all tracked reminders
+
+    Args:
+        period: Time period to analyze - "week" (7 days), "month" (30 days), "all" (60 days)
+
+    Returns:
+        ReminderStatisticsResult with comparison table
+    """
+    deps: AgentDeps = ctx.deps
+
+    try:
+        from src.db.queries import get_multi_reminder_comparison
+        from src.utils.reminder_formatters import format_multi_reminder_comparison
+
+        # Map period to days
+        period_days = {
+            "week": 7,
+            "month": 30,
+            "all": 60
+        }.get(period.lower(), 30)
+
+        # Get comparison data
+        comparisons = await get_multi_reminder_comparison(
+            user_id=deps.telegram_id,
+            days=period_days
+        )
+
+        # Format for display
+        formatted_stats = format_multi_reminder_comparison(comparisons)
+
+        return ReminderStatisticsResult(
+            success=True,
+            message=formatted_stats,
+            formatted_stats=formatted_stats,
+            analytics={"comparisons": comparisons, "period_days": period_days}
+        )
+
+    except Exception as e:
+        logger.error(f"Error comparing reminders: {e}", exc_info=True)
+        return ReminderStatisticsResult(
+            success=False,
+            message=f"Error comparing reminders: {str(e)}",
+            formatted_stats=None,
+            analytics=None
         )
 
 
@@ -1297,6 +1473,8 @@ async def get_agent_response(
         dynamic_agent.tool(log_tracking_entry)
         dynamic_agent.tool(schedule_reminder)
         dynamic_agent.tool(get_user_reminders)
+        dynamic_agent.tool(get_reminder_statistics)
+        dynamic_agent.tool(compare_all_reminders)
         dynamic_agent.tool(get_daily_food_summary)
         dynamic_agent.tool(remember_visual_pattern)
         dynamic_agent.tool(create_dynamic_tool)
@@ -1336,6 +1514,8 @@ async def get_agent_response(
                 fallback_agent.tool(log_tracking_entry)
                 fallback_agent.tool(schedule_reminder)
                 fallback_agent.tool(get_user_reminders)
+                fallback_agent.tool(get_reminder_statistics)
+                fallback_agent.tool(compare_all_reminders)
                 fallback_agent.tool(get_daily_food_summary)
                 fallback_agent.tool(remember_visual_pattern)
                 fallback_agent.tool(create_dynamic_tool)
