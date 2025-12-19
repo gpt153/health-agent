@@ -10,6 +10,7 @@ from src.models.food import FoodEntry
 from src.models.tracking import TrackingCategory, TrackingEntry
 from src.models.reminder import Reminder
 from src.models.sleep import SleepEntry
+from src.models.sleep_settings import SleepQuizSettings, SleepQuizSubmission
 
 logger = logging.getLogger(__name__)
 
@@ -1111,4 +1112,112 @@ async def get_reminder_completions(
             columns = [desc[0] for desc in cur.description]
 
             # Convert rows to list of dicts
+            return [dict(zip(columns, row)) for row in rows]
+
+# ==========================================
+# Sleep Quiz Settings Functions
+# ==========================================
+
+async def get_sleep_quiz_settings(user_id: str) -> Optional[dict]:
+    """Get sleep quiz settings for user"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT user_id, enabled, preferred_time, timezone, language_code,
+                       created_at, updated_at
+                FROM sleep_quiz_settings
+                WHERE user_id = %s
+                """,
+                (user_id,)
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+
+async def save_sleep_quiz_settings(settings: SleepQuizSettings) -> None:
+    """Create or update sleep quiz settings"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO sleep_quiz_settings
+                (user_id, enabled, preferred_time, timezone, language_code)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    enabled = EXCLUDED.enabled,
+                    preferred_time = EXCLUDED.preferred_time,
+                    timezone = EXCLUDED.timezone,
+                    language_code = EXCLUDED.language_code,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    settings.user_id,
+                    settings.enabled,
+                    str(settings.preferred_time),
+                    settings.timezone,
+                    settings.language_code
+                )
+            )
+            await conn.commit()
+    logger.info(f"Saved sleep quiz settings for {settings.user_id}")
+
+
+async def get_all_enabled_sleep_quiz_users() -> list[dict]:
+    """Get all users with sleep quiz enabled (for scheduling on startup)"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT user_id, enabled, preferred_time, timezone, language_code
+                FROM sleep_quiz_settings
+                WHERE enabled = true
+                ORDER BY user_id
+                """
+            )
+            return await cur.fetchall()
+
+
+async def save_sleep_quiz_submission(submission: SleepQuizSubmission) -> None:
+    """Record quiz submission for pattern learning"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO sleep_quiz_submissions
+                (id, user_id, scheduled_time, submitted_at, response_delay_minutes)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    submission.id,
+                    submission.user_id,
+                    submission.scheduled_time,
+                    submission.submitted_at,
+                    submission.response_delay_minutes
+                )
+            )
+            await conn.commit()
+    logger.info(f"Saved submission pattern for {submission.user_id}")
+
+
+async def get_submission_patterns(user_id: str, days: int = 30) -> list[dict]:
+    """Get recent submission patterns for analysis"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, user_id, scheduled_time, submitted_at, response_delay_minutes
+                FROM sleep_quiz_submissions
+                WHERE user_id = %s
+                  AND submitted_at > NOW() - INTERVAL '%s days'
+                ORDER BY submitted_at DESC
+                """,
+                (user_id, days)
+            )
+            rows = await cur.fetchall()
+
+            if not rows:
+                return []
+
+            columns = [desc[0] for desc in cur.description]
             return [dict(zip(columns, row)) for row in rows]
