@@ -414,18 +414,38 @@ async def handle_disruptions_callback(update: Update, context: ContextTypes.DEFA
 
 async def show_alertness_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Q8: Alertness rating - final question"""
+    # Get current selection if it exists
+    selected = context.user_data['sleep_quiz_data'].get('alertness_rating')
+
     keyboard = [
         [InlineKeyboardButton(str(i), callback_data=f"alert_{i}") for i in range(1, 6)],
         [InlineKeyboardButton(str(i), callback_data=f"alert_{i}") for i in range(6, 11)],
     ]
+
+    # Add submit button if a selection has been made
+    if selected:
+        keyboard.append([InlineKeyboardButton("✅ Submit", callback_data="alert_submit")])
+
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    text = (
-        "**Q8/8: How tired/alert do you feel RIGHT NOW?**\n\n"
-        "😴 1-2 = Exhausted\n"
-        "😐 5-6 = Normal\n"
-        "⚡ 9-10 = Wide awake"
-    )
+    if selected:
+        text = (
+            "**Q8/8: How tired/alert do you feel RIGHT NOW?**\n\n"
+            "😴 1-2 = Exhausted\n"
+            "😐 5-6 = Normal\n"
+            "⚡ 9-10 = Wide awake\n\n"
+            f"**Selected:** {selected}/10\n"
+            "👉 _Click submit to complete, or select a different rating_"
+        )
+    else:
+        text = (
+            "**Q8/8: How tired/alert do you feel RIGHT NOW?**\n\n"
+            "😴 1-2 = Exhausted\n"
+            "😐 5-6 = Normal\n"
+            "⚡ 9-10 = Wide awake\n\n"
+            "👉 _Select a number below_"
+        )
+
     await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
     return ALERTNESS
@@ -436,57 +456,93 @@ async def handle_alertness_callback(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     await query.answer()
 
-    alertness = int(query.data.replace("alert_", ""))
-    context.user_data['sleep_quiz_data']['alertness_rating'] = alertness
+    try:
+        # Check if this is a number selection or submit button
+        if query.data == "alert_submit":
+            # User clicked submit - finalize the quiz
+            quiz_data = context.user_data.get('sleep_quiz_data', {})
 
-    # Calculate total sleep duration
-    quiz_data = context.user_data['sleep_quiz_data']
-    bedtime_str = quiz_data['bedtime']  # "22:00"
-    wake_str = quiz_data['wake_time']  # "07:00"
-    latency = quiz_data['sleep_latency_minutes']
+            # Validate that alertness rating was selected
+            if 'alertness_rating' not in quiz_data:
+                await query.edit_message_text(
+                    "❌ Error: Please select a rating before submitting.",
+                    parse_mode="Markdown"
+                )
+                return await show_alertness_question(update, context)
 
-    # Parse times
-    bed_hour, bed_min = map(int, bedtime_str.split(':'))
-    wake_hour, wake_min = map(int, wake_str.split(':'))
+            alertness = quiz_data['alertness_rating']
+        else:
+            # User clicked a number - save selection and show submit button
+            alertness = int(query.data.replace("alert_", ""))
+            context.user_data['sleep_quiz_data']['alertness_rating'] = alertness
 
-    # Calculate duration (handle overnight)
-    bed_total_min = bed_hour * 60 + bed_min
-    wake_total_min = wake_hour * 60 + wake_min
-    if wake_total_min < bed_total_min:
-        wake_total_min += 24 * 60  # Add 24 hours
+            # Rebuild question with submit button
+            return await show_alertness_question(update, context)
 
-    sleep_minutes = wake_total_min - bed_total_min - latency
-    total_sleep_hours = sleep_minutes / 60.0
+        # Validate required fields
+        quiz_data = context.user_data.get('sleep_quiz_data', {})
+        required_fields = ['bedtime', 'wake_time', 'sleep_latency_minutes',
+                          'sleep_quality_rating', 'phone_usage']
+        missing_fields = [f for f in required_fields if f not in quiz_data]
 
-    # Create SleepEntry
-    entry = SleepEntry(
-        id=str(uuid4()),
-        user_id=str(update.effective_user.id),
-        logged_at=datetime.now(),
-        bedtime=time_type(bed_hour, bed_min),
-        sleep_latency_minutes=latency,
-        wake_time=time_type(wake_hour, wake_min),
-        total_sleep_hours=round(total_sleep_hours, 2),
-        night_wakings=quiz_data.get('night_wakings', 0),
-        sleep_quality_rating=quiz_data['sleep_quality_rating'],
-        disruptions=quiz_data.get('disruptions', []),
-        phone_usage=quiz_data['phone_usage'],
-        phone_duration_minutes=quiz_data.get('phone_duration_minutes'),
-        alertness_rating=alertness
-    )
+        if missing_fields:
+            logger.error(f"Missing quiz data fields: {missing_fields}")
+            await query.edit_message_text(
+                "❌ **Error:** Quiz data incomplete. Please start over with /sleep_quiz\n\n"
+                f"Missing data: {', '.join(missing_fields)}",
+                parse_mode="Markdown"
+            )
+            if 'sleep_quiz_data' in context.user_data:
+                del context.user_data['sleep_quiz_data']
+            return ConversationHandler.END
 
-    # Save to database
-    await save_sleep_entry(entry)
+        # Calculate total sleep duration
+        bedtime_str = quiz_data['bedtime']  # "22:00"
+        wake_str = quiz_data['wake_time']  # "07:00"
+        latency = quiz_data['sleep_latency_minutes']
 
-    # Log feature usage
-    await log_feature_usage(entry.user_id, "sleep_tracking")
+        # Parse times
+        bed_hour, bed_min = map(int, bedtime_str.split(':'))
+        wake_hour, wake_min = map(int, wake_str.split(':'))
 
-    # Show summary
-    hours = int(total_sleep_hours)
-    minutes = int((total_sleep_hours % 1) * 60)
-    quality_emoji = "😊" if entry.sleep_quality_rating >= 8 else "😐" if entry.sleep_quality_rating >= 5 else "😫"
+        # Calculate duration (handle overnight)
+        bed_total_min = bed_hour * 60 + bed_min
+        wake_total_min = wake_hour * 60 + wake_min
+        if wake_total_min < bed_total_min:
+            wake_total_min += 24 * 60  # Add 24 hours
 
-    summary = f"""✅ **Sleep Logged!**
+        sleep_minutes = wake_total_min - bed_total_min - latency
+        total_sleep_hours = sleep_minutes / 60.0
+
+        # Create SleepEntry
+        entry = SleepEntry(
+            id=str(uuid4()),
+            user_id=str(update.effective_user.id),
+            logged_at=datetime.now(),
+            bedtime=time_type(bed_hour, bed_min),
+            sleep_latency_minutes=latency,
+            wake_time=time_type(wake_hour, wake_min),
+            total_sleep_hours=round(total_sleep_hours, 2),
+            night_wakings=quiz_data.get('night_wakings', 0),
+            sleep_quality_rating=quiz_data['sleep_quality_rating'],
+            disruptions=quiz_data.get('disruptions', []),
+            phone_usage=quiz_data['phone_usage'],
+            phone_duration_minutes=quiz_data.get('phone_duration_minutes'),
+            alertness_rating=alertness
+        )
+
+        # Save to database
+        await save_sleep_entry(entry)
+
+        # Log feature usage
+        await log_feature_usage(entry.user_id, "sleep_tracking")
+
+        # Show summary
+        hours = int(total_sleep_hours)
+        minutes = int((total_sleep_hours % 1) * 60)
+        quality_emoji = "😊" if entry.sleep_quality_rating >= 8 else "😐" if entry.sleep_quality_rating >= 5 else "😫"
+
+        summary = f"""✅ **Sleep Logged!**
 
 🛏️ **Bedtime:** {bedtime_str}
 😴 **Fell asleep:** {latency} min
@@ -499,14 +555,45 @@ async def handle_alertness_callback(update: Update, context: ContextTypes.DEFAUL
 
 💡 **Tip:** You got {hours}h {minutes}m of sleep. Aim for 8-10h for optimal health!"""
 
-    await query.edit_message_text(summary, parse_mode="Markdown")
+        await query.edit_message_text(summary, parse_mode="Markdown")
 
-    # Clean up quiz data
-    del context.user_data['sleep_quiz_data']
+        # Clean up quiz data
+        del context.user_data['sleep_quiz_data']
 
-    logger.info(f"Sleep quiz completed for user {entry.user_id}")
+        logger.info(f"Sleep quiz completed for user {entry.user_id}")
 
-    return ConversationHandler.END
+        return ConversationHandler.END
+
+    except KeyError as e:
+        logger.error(f"Missing quiz data key: {e}", exc_info=True)
+        await query.edit_message_text(
+            "❌ **Error:** Quiz data incomplete. Please start over with /sleep_quiz",
+            parse_mode="Markdown"
+        )
+        if 'sleep_quiz_data' in context.user_data:
+            del context.user_data['sleep_quiz_data']
+        return ConversationHandler.END
+
+    except ValueError as e:
+        logger.error(f"Invalid quiz data format: {e}", exc_info=True)
+        await query.edit_message_text(
+            "❌ **Error:** Invalid data format. Please start over with /sleep_quiz",
+            parse_mode="Markdown"
+        )
+        if 'sleep_quiz_data' in context.user_data:
+            del context.user_data['sleep_quiz_data']
+        return ConversationHandler.END
+
+    except Exception as e:
+        logger.error(f"Error completing sleep quiz: {e}", exc_info=True)
+        await query.edit_message_text(
+            "❌ **Error:** Failed to save sleep data. Please try again later.\n\n"
+            "If the problem persists, contact support.",
+            parse_mode="Markdown"
+        )
+        if 'sleep_quiz_data' in context.user_data:
+            del context.user_data['sleep_quiz_data']
+        return ConversationHandler.END
 
 
 async def cancel_sleep_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
