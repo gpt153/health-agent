@@ -496,6 +496,38 @@ async def handle_alertness_callback(update: Update, context: ContextTypes.DEFAUL
     # Log feature usage
     await log_feature_usage(entry.user_id, "sleep_tracking")
 
+    # Track submission for pattern learning
+    try:
+        # Get scheduled time from bot_data (set by automated quiz trigger)
+        scheduled_time = context.bot_data.get(f"sleep_quiz_scheduled_{user_id}")
+
+        if scheduled_time:
+            # Calculate delay in minutes
+            from datetime import datetime
+            from uuid import uuid4
+            from src.db.queries import save_sleep_quiz_submission
+            from src.models.sleep_settings import SleepQuizSubmission
+
+            submitted_at = datetime.now()
+            delay = int((submitted_at - scheduled_time).total_seconds() / 60)
+
+            # Save submission pattern
+            submission = SleepQuizSubmission(
+                id=str(uuid4()),
+                user_id=user_id,
+                scheduled_time=scheduled_time,
+                submitted_at=submitted_at,
+                response_delay_minutes=delay
+            )
+            await save_sleep_quiz_submission(submission)
+
+            # Clear from bot_data
+            del context.bot_data[f"sleep_quiz_scheduled_{user_id}"]
+
+            logger.info(f"Tracked submission pattern: {delay}min delay for {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to track submission pattern: {e}", exc_info=True)
+
     # Show summary
     hours = int(total_sleep_hours)
     minutes = int((total_sleep_hours % 1) * 60)
