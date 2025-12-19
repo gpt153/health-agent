@@ -1015,7 +1015,13 @@ async def generate_invite_code(
 
     # Check if caller is admin
     from src.utils.auth import is_admin
-    if not is_admin(deps.telegram_id):
+    is_admin_user = is_admin(deps.telegram_id)
+    logger.debug(
+        f"Invite code generation requested by user {deps.telegram_id} "
+        f"(is_admin: {is_admin_user})"
+    )
+
+    if not is_admin_user:
         logger.warning(f"Non-admin user {deps.telegram_id} attempted to generate invite codes")
         return InviteCodeResult(
             success=False,
@@ -1054,23 +1060,51 @@ async def generate_invite_code(
             'zebra', 'storm', 'pearl', 'tiger', 'frost', 'coral', 'stone', 'wind'
         ]
 
-        # Generate codes
+        # Generate codes with retry logic for collision handling
         codes = []
-        for _ in range(count):
-            # Generate random 3-word code (e.g., "salt-house-pony")
-            code = '-'.join(random.choices(words, k=3))
+        max_retries = 10
 
-            # Create code in database
-            await create_invite_code(
-                code=code,
-                created_by=deps.telegram_id,
-                max_uses=max_uses,
-                tier=tier,
-                trial_days=trial_days
-            )
+        for i in range(count):
+            code_created = False
 
-            codes.append(code)
-            logger.info(f"Admin {deps.telegram_id} generated invite code: {code}")
+            for attempt in range(max_retries):
+                # Generate random 3-word code (e.g., "salt-house-pony")
+                code = '-'.join(random.choices(words, k=3))
+
+                try:
+                    # Create code in database
+                    await create_invite_code(
+                        code=code,
+                        created_by=deps.telegram_id,
+                        max_uses=max_uses,
+                        tier=tier,
+                        trial_days=trial_days
+                    )
+
+                    codes.append(code)
+                    logger.info(f"Admin {deps.telegram_id} generated invite code: {code}")
+                    code_created = True
+                    break  # Success, exit retry loop
+
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    # Check for unique constraint violation (collision)
+                    if ("unique constraint" in error_msg or "duplicate" in error_msg) and attempt < max_retries - 1:
+                        logger.debug(
+                            f"Invite code collision detected for '{code}' "
+                            f"(attempt {attempt + 1}/{max_retries}), retrying..."
+                        )
+                        continue  # Retry with new code
+                    else:
+                        # Other error or max retries reached
+                        if attempt == max_retries - 1:
+                            logger.error(
+                                f"Failed to generate unique invite code after {max_retries} attempts"
+                            )
+                        raise
+
+            if not code_created:
+                raise Exception(f"Failed to generate invite code {i + 1} of {count}")
 
         # Format response
         if count == 1:

@@ -50,6 +50,27 @@ async def is_authorized(telegram_id: str) -> bool:
 
 
 def is_admin(telegram_id: str) -> bool:
-    """Check if user is admin"""
+    """
+    Check if user is admin
+
+    Normalizes input to handle type variations (int/str) and whitespace.
+    This ensures consistent admin checks regardless of how telegram_id is passed.
+    """
     ADMIN_USER_ID = "7376426503"
-    return telegram_id == ADMIN_USER_ID
+
+    # Handle None case explicitly
+    if telegram_id is None:
+        logger.debug("Admin check: telegram_id is None, returning False")
+        return False
+
+    # Normalize input: convert to string and strip whitespace
+    normalized_id = str(telegram_id).strip()
+    result = normalized_id == ADMIN_USER_ID
+
+    # Debug logging to help diagnose admin check issues
+    logger.debug(
+        f"Admin check: input='{telegram_id}' (type: {type(telegram_id).__name__}), "
+        f"normalized='{normalized_id}', result={result}"
+    )
+
+    return result
