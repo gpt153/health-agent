@@ -673,58 +673,60 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
     # Check if user is in onboarding
-    onboarding = await get_onboarding_state(user_id)
-    if onboarding and not onboarding.get('completed_at'):
-        # Route to onboarding handler
-        await handle_onboarding_message(update, context)
-        return
+    # DISABLED: Onboarding check commented out for debugging
+    # onboarding = await get_onboarding_state(user_id)
+    # if onboarding and not onboarding.get('completed_at'):
+    #     # Route to onboarding handler
+    #     await handle_onboarding_message(update, context)
+    #     return
 
     # Check authorization (for active users)
     if not await is_authorized(user_id):
         return
 
+    # DISABLED: Timezone check commented out for debugging
     # Check if user has timezone set (first-time setup)
-    from src.utils.timezone_helper import get_timezone_from_profile, suggest_timezones_for_language, update_timezone_in_profile, normalize_timezone
-
-    user_timezone = get_timezone_from_profile(user_id)
-    if not user_timezone:
-        # Check if message looks like a timezone string (e.g., "America/New_York")
-        if '/' in text and len(text.split()) == 1:
-            # Normalize timezone (handles case-insensitive input)
-            normalized_tz = normalize_timezone(text.strip())
-            if normalized_tz:
-                # Valid timezone - set it
-                if update_timezone_in_profile(user_id, normalized_tz):
-                    await update.message.reply_text(
-                        f"✅ Great! Your timezone is now set to **{normalized_tz}**.\n\n"
-                        f"You can start using the bot normally now!",
-                        parse_mode="Markdown"
-                    )
-                    return
-            else:
-                # Invalid timezone - show error
-                await update.message.reply_text(
-                    f"❌ Invalid timezone. Try \"America/New_York\" or share your location.",
-                    parse_mode="Markdown"
-                )
-                return
-
-        # New user - ask for timezone with smart suggestions
-        language_code = update.effective_user.language_code or 'en'
-        suggested_timezones = suggest_timezones_for_language(language_code)
-
-        timezone_list = "\n".join([f"• {tz}" for tz in suggested_timezones[:3]])
-
-        await update.message.reply_text(
-            f"👋 **Welcome! Let's set up your timezone first.**\n\n"
-            f"Based on your language ({language_code}), I suggest:\n{timezone_list}\n\n"
-            f"**Two ways to set your timezone:**\n"
-            f"1️⃣ Share your location (📎 → Location) - I'll detect it automatically\n"
-            f"2️⃣ Reply with your timezone (e.g., \"Europe/Stockholm\", \"America/New_York\")\n\n"
-            f"This helps me give you accurate time-based responses!",
-            parse_mode="Markdown"
-        )
-        return
+    # from src.utils.timezone_helper import get_timezone_from_profile, suggest_timezones_for_language, update_timezone_in_profile, normalize_timezone
+    #
+    # user_timezone = get_timezone_from_profile(user_id)
+    # if not user_timezone:
+    #     # Check if message looks like a timezone string (e.g., "America/New_York")
+    #     if '/' in text and len(text.split()) == 1:
+    #         # Normalize timezone (handles case-insensitive input)
+    #         normalized_tz = normalize_timezone(text.strip())
+    #         if normalized_tz:
+    #             # Valid timezone - set it
+    #             if update_timezone_in_profile(user_id, normalized_tz):
+    #                 await update.message.reply_text(
+    #                     f"✅ Great! Your timezone is now set to **{normalized_tz}**.\n\n"
+    #                     f"You can start using the bot normally now!",
+    #                     parse_mode="Markdown"
+    #                 )
+    #                 return
+    #         else:
+    #             # Invalid timezone - show error
+    #             await update.message.reply_text(
+    #                 f"❌ Invalid timezone. Try \"America/New_York\" or share your location.",
+    #                 parse_mode="Markdown"
+    #             )
+    #             return
+    #
+    #     # New user - ask for timezone with smart suggestions
+    #     language_code = update.effective_user.language_code or 'en'
+    #     suggested_timezones = suggest_timezones_for_language(language_code)
+    #
+    #     timezone_list = "\n".join([f"• {tz}" for tz in suggested_timezones[:3]])
+    #
+    #     await update.message.reply_text(
+    #         f"👋 **Welcome! Let's set up your timezone first.**\n\n"
+    #         f"Based on your language ({language_code}), I suggest:\n{timezone_list}\n\n"
+    #         f"**Two ways to set your timezone:**\n"
+    #         f"1️⃣ Share your location (📎 → Location) - I'll detect it automatically\n"
+    #         f"2️⃣ Reply with your timezone (e.g., \"Europe/Stockholm\", \"America/New_York\")\n\n"
+    #         f"This helps me give you accurate time-based responses!",
+    #         parse_mode="Markdown"
+    #     )
+    #     return
 
     # Get AI response using PydanticAI agent
     try:
