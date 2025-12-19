@@ -434,6 +434,11 @@ async def schedule_reminder(
                 reminder_message=message,
             )
 
+        # Smart detection: determine if tracking should be enabled
+        from src.agent.reminder_utils import should_enable_tracking
+
+        enable_tracking, detection_reason = should_enable_tracking(message)
+
         # Get user's timezone from preferences
         user_memory = deps.user_memory
         prefs_content = user_memory.get("preferences", "")
@@ -463,7 +468,9 @@ async def schedule_reminder(
                 time=reminder_time,
                 timezone=user_timezone
             ),
-            active=True
+            active=True,
+            enable_completion_tracking=enable_tracking,
+            streak_motivation=enable_tracking
         )
 
         # Save to database first
@@ -480,15 +487,26 @@ async def schedule_reminder(
             message=message,
             reminder_type="daily",
             user_timezone=user_timezone,
+            reminder_id=reminder_id
         )
 
+        # Build response message
+        response_message = f"Reminder scheduled for {reminder_time} ({user_timezone})"
+
+        if enable_tracking:
+            response_message += "\n\n✅ **Completion tracking enabled**"
+            if detection_reason:
+                response_message += f"\n💡 {detection_reason}"
+            response_message += "\n\nYou'll see a 'Done' button to mark completion, track streaks, and view statistics!"
+
         logger.info(
-            f"Scheduled and saved reminder for {deps.telegram_id}: {reminder_time} {user_timezone}"
+            f"Scheduled and saved reminder for {deps.telegram_id}: {reminder_time} {user_timezone} "
+            f"(tracking={enable_tracking})"
         )
 
         return ReminderScheduleResult(
             success=True,
-            message=f"Reminder scheduled for {reminder_time} ({user_timezone})",
+            message=response_message,
             reminder_time=reminder_time,
             reminder_message=message,
         )
