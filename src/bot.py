@@ -174,6 +174,8 @@ Extract information in these categories if present:
 - Health Events: injuries, illnesses, symptoms
 - Psychology: motivations, challenges, emotional state
 - Schedule: recurring events, routines
+- Data Corrections: when user corrects previously stated information or says "that's wrong, it should be X"
+- Explicit Memory Requests: when user explicitly says "remember X" or "save this"
 
 Return JSON with this structure:
 {{
@@ -190,6 +192,8 @@ IMPORTANT:
 - Only extract information ABOUT THE USER (not general advice)
 - Be specific and detailed
 - Include context (days, times, amounts)
+- ALWAYS extract corrections when user says something is wrong
+- ALWAYS extract explicit memory requests when user says "remember"
 - Respond in the same language as user input
 - Return valid JSON only"""
 

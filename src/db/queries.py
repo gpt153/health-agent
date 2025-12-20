@@ -65,6 +65,126 @@ async def save_food_entry(entry: FoodEntry) -> None:
     logger.info(f"Saved food entry for user {entry.user_id}")
 
 
+async def update_food_entry(
+    entry_id: str,
+    user_id: str,
+    total_calories: Optional[int] = None,
+    total_macros: Optional[dict] = None,
+    foods: Optional[list] = None,
+    correction_note: Optional[str] = None,
+    corrected_by: str = "user"
+) -> dict:
+    """
+    Update an existing food entry with corrections
+
+    Args:
+        entry_id: UUID of the food entry to update
+        user_id: Telegram user ID (for verification)
+        total_calories: New total calories (optional)
+        total_macros: New macros dict {protein, carbs, fat} (optional)
+        foods: New foods list (optional)
+        correction_note: Reason for correction
+        corrected_by: 'user' or 'auto'
+
+    Returns:
+        dict with old_values, new_values, and success status
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # First, get the current entry to verify ownership and for audit
+            await cur.execute(
+                """
+                SELECT id, user_id, total_calories, total_macros, foods
+                FROM food_entries
+                WHERE id = %s AND user_id = %s
+                """,
+                (entry_id, user_id)
+            )
+            current_entry = await cur.fetchone()
+
+            if not current_entry:
+                logger.warning(f"Food entry {entry_id} not found for user {user_id}")
+                return {
+                    "success": False,
+                    "error": "Food entry not found or does not belong to user"
+                }
+
+            # Store old values for audit
+            old_values = {
+                "total_calories": current_entry["total_calories"],
+                "total_macros": current_entry["total_macros"],
+                "foods": current_entry["foods"]
+            }
+
+            # Prepare new values (use old values if not provided)
+            new_calories = total_calories if total_calories is not None else current_entry["total_calories"]
+            new_macros = total_macros if total_macros is not None else current_entry["total_macros"]
+            new_foods = foods if foods is not None else current_entry["foods"]
+
+            # Update the entry
+            await cur.execute(
+                """
+                UPDATE food_entries
+                SET total_calories = %s,
+                    total_macros = %s,
+                    foods = %s,
+                    correction_note = %s,
+                    corrected_by = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND user_id = %s
+                """,
+                (
+                    new_calories,
+                    json.dumps(new_macros) if isinstance(new_macros, dict) else new_macros,
+                    json.dumps(new_foods) if isinstance(new_foods, list) else new_foods,
+                    correction_note,
+                    corrected_by,
+                    entry_id,
+                    user_id
+                )
+            )
+
+            # Log to audit table
+            await cur.execute(
+                """
+                INSERT INTO food_entry_audit
+                (food_entry_id, user_id, action, old_values, new_values, correction_note)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    entry_id,
+                    user_id,
+                    "updated",
+                    json.dumps(old_values),
+                    json.dumps({
+                        "total_calories": new_calories,
+                        "total_macros": new_macros,
+                        "foods": new_foods
+                    }),
+                    correction_note
+                )
+            )
+
+            await conn.commit()
+
+            logger.info(
+                f"Updated food entry {entry_id} for user {user_id}: "
+                f"{old_values['total_calories']} -> {new_calories} kcal"
+            )
+
+            return {
+                "success": True,
+                "entry_id": str(entry_id),
+                "old_values": old_values,
+                "new_values": {
+                    "total_calories": new_calories,
+                    "total_macros": new_macros,
+                    "foods": new_foods
+                },
+                "correction_note": correction_note
+            }
+
+
 async def get_recent_food_entries(user_id: str, limit: int = 10) -> list[dict]:
     """Get recent food entries for user"""
     async with db.connection() as conn:
