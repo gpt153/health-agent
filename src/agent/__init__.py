@@ -1383,6 +1383,9 @@ from src.agent.gamification_tools import (
     get_monthly_dashboard_tool,
     get_progress_chart_tool,
     get_motivation_profile_tool,
+    browse_challenges_tool,
+    start_challenge_tool,
+    get_my_challenges_tool,
     XPStatusResult,
     StreakStatusResult,
     AchievementStatusResult,
@@ -1569,6 +1572,58 @@ async def get_motivation_profile(ctx: RunContext) -> str:
     return await get_motivation_profile_tool(ctx)
 
 
+@agent.tool
+async def browse_challenges(ctx: RunContext, difficulty: Optional[str] = None) -> str:
+    """
+    **BROWSE CHALLENGES** - Use when user wants to see available challenges
+
+    Shows all health challenges from the library, optionally filtered by difficulty.
+
+    Example queries:
+    - "What challenges are available?"
+    - "Show me challenges"
+    - "What can I do?"
+    - "Easy challenges"
+    - "Show hard challenges"
+    """
+    return await browse_challenges_tool(ctx, difficulty)
+
+
+@agent.tool
+async def start_challenge(ctx: RunContext, challenge_name: str) -> str:
+    """
+    **START CHALLENGE** - Use when user wants to begin a challenge
+
+    Starts a specific challenge for the user.
+
+    Args:
+        challenge_name: Name of the challenge to start
+
+    Example queries:
+    - "Start Week Warrior"
+    - "Begin the medication master challenge"
+    - "I want to do the XP accumulator"
+    """
+    return await start_challenge_tool(ctx, challenge_name)
+
+
+@agent.tool
+async def get_my_challenges(ctx: RunContext) -> str:
+    """
+    **GET MY CHALLENGES** - Use when user asks about their challenge progress
+
+    Shows user's active and completed challenges with progress tracking.
+
+    Example queries:
+    - "My challenges"
+    - "What challenges am I doing?"
+    - "Show my progress"
+    - "Challenge status"
+    - "How am I doing on challenges?"
+    """
+    return await get_my_challenges_tool(ctx)
+
+
 async def get_agent_response(
     telegram_id: str,
     user_message: str,
@@ -1692,6 +1747,10 @@ async def get_agent_response(
         dynamic_agent.tool(get_progress_chart)
         # Motivation profile
         dynamic_agent.tool(get_motivation_profile)
+        # Challenges
+        dynamic_agent.tool(browse_challenges)
+        dynamic_agent.tool(start_challenge)
+        dynamic_agent.tool(get_my_challenges)
 
         # Register dynamically loaded tools
         tool_manager.register_tools_on_agent(dynamic_agent)
@@ -1746,6 +1805,10 @@ async def get_agent_response(
                 fallback_agent.tool(get_progress_chart)
                 # Motivation profile
                 fallback_agent.tool(get_motivation_profile)
+                # Challenges
+                fallback_agent.tool(browse_challenges)
+                fallback_agent.tool(start_challenge)
+                fallback_agent.tool(get_my_challenges)
 
                 # Register dynamically loaded tools
                 tool_manager.register_tools_on_agent(fallback_agent)

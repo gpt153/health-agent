@@ -29,6 +29,18 @@ from src.gamification.motivation_profiles import (
     format_profile_display,
     MOTIVATION_TYPES
 )
+from src.gamification.challenges import (
+    get_all_challenges,
+    get_challenge_by_id,
+    filter_challenges,
+    start_challenge,
+    get_user_challenges,
+    format_challenge_display,
+    format_user_challenge_progress,
+    ChallengeDifficulty,
+    ChallengeType,
+    ChallengeStatus
+)
 from datetime import date
 
 logger = logging.getLogger(__name__)
@@ -567,3 +579,188 @@ async def get_motivation_profile_tool(ctx: RunContext) -> str:
     except Exception as e:
         logger.error(f"Error getting motivation profile: {e}", exc_info=True)
         return "Sorry, I couldn't retrieve your motivation profile right now. Please try again later."
+
+
+async def browse_challenges_tool(ctx: RunContext, difficulty: Optional[str] = None) -> str:
+    """
+    Browse available challenges
+
+    Shows all available health challenges, optionally filtered by difficulty.
+
+    Args:
+        difficulty: Optional difficulty filter (easy, medium, hard, expert)
+
+    Use this when user asks: "what challenges are available", "show me challenges",
+    "challenge library", "what can I do", etc.
+    """
+    try:
+        # Filter by difficulty if provided
+        if difficulty:
+            try:
+                diff_level = ChallengeDifficulty[difficulty.upper()]
+                challenges = filter_challenges(difficulty=diff_level)
+            except KeyError:
+                challenges = get_all_challenges()
+        else:
+            challenges = get_all_challenges()
+
+        if not challenges:
+            return "No challenges found matching your criteria."
+
+        # Group by difficulty
+        by_difficulty = {
+            ChallengeDifficulty.EASY: [],
+            ChallengeDifficulty.MEDIUM: [],
+            ChallengeDifficulty.HARD: [],
+            ChallengeDifficulty.EXPERT: []
+        }
+
+        for challenge in challenges:
+            by_difficulty[challenge.difficulty].append(challenge)
+
+        # Build display
+        lines = ["🏆 **CHALLENGE LIBRARY**\n"]
+
+        difficulty_names = {
+            ChallengeDifficulty.EASY: "🟢 Easy Challenges (1-7 days)",
+            ChallengeDifficulty.MEDIUM: "🟡 Medium Challenges (7-14 days)",
+            ChallengeDifficulty.HARD: "🟠 Hard Challenges (14-30 days)",
+            ChallengeDifficulty.EXPERT: "🔴 Expert Challenges (30+ days)"
+        }
+
+        for diff_level, challenges_list in by_difficulty.items():
+            if challenges_list:
+                lines.append(f"\n**{difficulty_names[diff_level]}**")
+                for challenge in challenges_list:
+                    lines.append(
+                        f"\n{challenge.icon} **{challenge.name}**\n"
+                        f"   {challenge.description}\n"
+                        f"   Reward: {challenge.xp_reward} XP"
+                    )
+
+        lines.append("\n\nTo start a challenge, say: 'Start [challenge name]'")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Error browsing challenges: {e}", exc_info=True)
+        return "Sorry, I couldn't retrieve the challenges right now. Please try again later."
+
+
+async def start_challenge_tool(ctx: RunContext, challenge_name: str) -> str:
+    """
+    Start a challenge
+
+    Begins a challenge for the user.
+
+    Args:
+        challenge_name: Name or ID of the challenge to start
+
+    Use this when user asks: "start [challenge]", "begin [challenge]",
+    "I want to do [challenge]", etc.
+    """
+    try:
+        user_id = ctx.deps.telegram_id
+
+        # Find challenge by name (case-insensitive)
+        all_challenges = get_all_challenges()
+        challenge = None
+
+        # Try exact ID match first
+        challenge = get_challenge_by_id(challenge_name.lower().replace(" ", "_"))
+
+        # Try name match
+        if not challenge:
+            challenge_name_lower = challenge_name.lower()
+            for c in all_challenges:
+                if c.name.lower() == challenge_name_lower:
+                    challenge = c
+                    break
+
+        # Try partial name match
+        if not challenge:
+            for c in all_challenges:
+                if challenge_name_lower in c.name.lower():
+                    challenge = c
+                    break
+
+        if not challenge:
+            return (
+                f"I couldn't find a challenge called '{challenge_name}'. "
+                "Try browsing available challenges first."
+            )
+
+        # Start the challenge
+        result = await start_challenge(user_id, challenge.id)
+
+        return result['message']
+
+    except Exception as e:
+        logger.error(f"Error starting challenge: {e}", exc_info=True)
+        return "Sorry, I couldn't start the challenge right now. Please try again later."
+
+
+async def get_my_challenges_tool(ctx: RunContext) -> str:
+    """
+    Get user's active and completed challenges
+
+    Shows all challenges the user is working on or has completed.
+
+    Use this when user asks: "my challenges", "what challenges am I doing",
+    "show my progress", "challenge status", etc.
+    """
+    try:
+        user_id = ctx.deps.telegram_id
+
+        # Get all user challenges
+        all_challenges = await get_user_challenges(user_id)
+
+        if not all_challenges:
+            return (
+                "You don't have any active challenges yet! 💪\n\n"
+                "Browse available challenges to get started."
+            )
+
+        # Group by status
+        in_progress = [c for c in all_challenges if c.status == ChallengeStatus.IN_PROGRESS]
+        completed = [c for c in all_challenges if c.status == ChallengeStatus.COMPLETED]
+        failed = [c for c in all_challenges if c.status == ChallengeStatus.FAILED]
+
+        lines = ["🏆 **YOUR CHALLENGES**\n"]
+
+        # Active challenges
+        if in_progress:
+            lines.append("**⏳ In Progress:**\n")
+            for user_challenge in in_progress:
+                challenge = get_challenge_by_id(user_challenge.challenge_id)
+                if challenge:
+                    progress_display = format_user_challenge_progress(user_challenge, challenge)
+                    lines.append(progress_display)
+                    lines.append("")  # Blank line
+
+        # Completed challenges
+        if completed:
+            lines.append("\n**✅ Completed:**\n")
+            for user_challenge in completed[:5]:  # Show last 5
+                challenge = get_challenge_by_id(user_challenge.challenge_id)
+                if challenge:
+                    lines.append(
+                        f"{challenge.icon} {challenge.name} "
+                        f"(+{challenge.xp_reward} XP)"
+                    )
+
+        # Failed challenges
+        if failed:
+            lines.append("\n**❌ Not Completed:**\n")
+            for user_challenge in failed[:3]:  # Show last 3
+                challenge = get_challenge_by_id(user_challenge.challenge_id)
+                if challenge:
+                    lines.append(f"{challenge.icon} {challenge.name}")
+
+        lines.append("\n💪 Keep up the great work!")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Error getting user challenges: {e}", exc_info=True)
+        return "Sorry, I couldn't retrieve your challenges right now. Please try again later."
