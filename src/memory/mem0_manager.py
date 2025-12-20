@@ -90,15 +90,28 @@ class Mem0Manager:
 
         try:
             # Mem0 will automatically extract facts from this message
-            self.memory.add(
+            result = self.memory.add(
                 messages=[{"role": role, "content": message}],
                 user_id=user_id,
                 metadata=metadata or {}
             )
-            logger.debug(f"Added message to Mem0 for user {user_id}")
+
+            # Log what Mem0 extracted (if anything)
+            logger.info(f"[MEM0] Added message to Mem0 for user {user_id}")
+            logger.info(f"[MEM0] Message preview: {message[:100]}...")
+            logger.info(f"[MEM0] Mem0 response: {result}")
+
+            # Check if memories were actually created
+            if result and isinstance(result, dict):
+                if 'results' in result and result['results']:
+                    logger.info(f"[MEM0] ✅ Successfully extracted {len(result['results'])} memories")
+                    for mem in result['results']:
+                        logger.info(f"[MEM0]   - {mem}")
+                else:
+                    logger.warning(f"[MEM0] ⚠️ No memories extracted from message")
 
         except Exception as e:
-            logger.error(f"Failed to add message to Mem0: {e}")
+            logger.error(f"[MEM0] ❌ Failed to add message to Mem0: {e}", exc_info=True)
 
     def search(self, user_id: str, query: str, limit: int = 5) -> List[Dict[str, Any]]:
         """

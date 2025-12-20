@@ -18,6 +18,7 @@ from src.db.queries import (
     save_tracking_entry,
     get_tracking_categories,
     get_food_entries_by_date,
+    update_food_entry,
     save_dynamic_tool,
     get_tool_by_name,
     create_tool_approval_request,
@@ -122,6 +123,26 @@ class FoodSummaryResult(BaseModel):
     total_carbs: float
     total_fat: float
     entry_count: int
+
+
+class FoodEntryUpdateResult(BaseModel):
+    """Result of food entry update/correction"""
+
+    success: bool
+    message: str
+    entry_id: Optional[str] = None
+    old_calories: Optional[float] = None
+    new_calories: Optional[float] = None
+    correction_note: Optional[str] = None
+
+
+class RememberFactResult(BaseModel):
+    """Result of explicit fact remembering"""
+
+    success: bool
+    message: str
+    fact: str
+    category: str
 
 
 class VisualPatternResult(BaseModel):
@@ -968,6 +989,170 @@ async def get_daily_food_summary(
             total_carbs=0.0,
             total_fat=0.0,
             entry_count=0,
+        )
+
+
+@agent.tool
+async def update_food_entry_tool(
+    ctx,
+    entry_id: str,
+    new_total_calories: Optional[int] = None,
+    new_protein: Optional[float] = None,
+    new_carbs: Optional[float] = None,
+    new_fat: Optional[float] = None,
+    correction_note: str = None
+) -> FoodEntryUpdateResult:
+    """
+    Update/correct an existing food entry when user provides corrections
+
+    Use this tool when:
+    - User says "that's wrong, it should be X"
+    - User corrects calorie or macro values
+    - User provides more accurate estimates
+    - Any time user wants to fix previously logged food data
+
+    CRITICAL: Use this tool to ensure corrections persist after /clear!
+
+    Args:
+        entry_id: UUID of the food entry to update (get from get_daily_food_summary)
+        new_total_calories: Corrected total calories (optional)
+        new_protein: Corrected protein in grams (optional)
+        new_carbs: Corrected carbs in grams (optional)
+        new_fat: Corrected fat in grams (optional)
+        correction_note: Why the correction was made (e.g., "User corrected pizza portion")
+
+    Returns:
+        FoodEntryUpdateResult with old/new values
+    """
+    deps: AgentDeps = ctx.deps
+
+    try:
+        # Build macros dict if any macro values provided
+        new_macros = None
+        if any([new_protein is not None, new_carbs is not None, new_fat is not None]):
+            # Get current entry to fill in missing values
+            entries = await get_food_entries_by_date(
+                user_id=deps.telegram_id,
+                start_date=datetime.now().strftime("%Y-%m-%d"),
+                end_date=datetime.now().strftime("%Y-%m-%d")
+            )
+
+            # Find the entry by ID
+            current_entry = None
+            for entry in entries:
+                if str(entry.get("id")) == entry_id:
+                    current_entry = entry
+                    break
+
+            if current_entry:
+                current_macros = current_entry.get("total_macros", {})
+                if isinstance(current_macros, str):
+                    import json
+                    current_macros = json.loads(current_macros)
+
+                new_macros = {
+                    "protein": new_protein if new_protein is not None else current_macros.get("protein", 0),
+                    "carbs": new_carbs if new_carbs is not None else current_macros.get("carbs", 0),
+                    "fat": new_fat if new_fat is not None else current_macros.get("fat", 0),
+                }
+
+        # Update the entry
+        result = await update_food_entry(
+            entry_id=entry_id,
+            user_id=deps.telegram_id,
+            total_calories=new_total_calories,
+            total_macros=new_macros,
+            correction_note=correction_note or "User corrected food entry",
+            corrected_by="user"
+        )
+
+        if result.get("success"):
+            old_cal = result["old_values"].get("total_calories", 0)
+            new_cal = result["new_values"].get("total_calories", 0)
+
+            logger.info(
+                f"Food entry updated: {entry_id} from {old_cal} to {new_cal} kcal"
+            )
+
+            return FoodEntryUpdateResult(
+                success=True,
+                message=f"Updated food entry: {old_cal} → {new_cal} kcal. This correction is now permanent!",
+                entry_id=entry_id,
+                old_calories=float(old_cal) if old_cal else None,
+                new_calories=float(new_cal) if new_cal else None,
+                correction_note=correction_note
+            )
+        else:
+            return FoodEntryUpdateResult(
+                success=False,
+                message=f"Failed to update: {result.get('error', 'Unknown error')}"
+            )
+
+    except Exception as e:
+        logger.error(f"Failed to update food entry: {e}", exc_info=True)
+        return FoodEntryUpdateResult(
+            success=False,
+            message=f"Error updating food entry: {str(e)}"
+        )
+
+
+@agent.tool
+async def remember_fact(
+    ctx, fact: str, category: str = "General Information"
+) -> RememberFactResult:
+    """
+    Explicitly remember a fact with verification - GUARANTEED to persist after /clear
+
+    Use this tool when:
+    - User explicitly says "remember X"
+    - User provides important information that must not be forgotten
+    - User corrects you and wants it saved permanently
+    - Any critical fact that needs to be 100% reliable
+
+    This tool provides VERIFIED saving - you will know if it succeeded or failed.
+
+    Args:
+        fact: The fact to remember (be specific and complete)
+        category: Category for organization (e.g., "Food Preferences", "Training Schedule")
+
+    Returns:
+        RememberFactResult with success confirmation
+    """
+    deps: AgentDeps = ctx.deps
+
+    try:
+        # Save to patterns file (long-term memory)
+        await deps.memory_manager.save_observation(
+            deps.telegram_id, category, fact
+        )
+
+        # Also save to Mem0 for semantic retrieval
+        from src.memory.mem0_manager import mem0_manager
+        mem0_manager.add_message(
+            deps.telegram_id,
+            fact,
+            role="user",
+            metadata={"type": "explicit_fact", "category": category}
+        )
+
+        logger.info(
+            f"[REMEMBER_FACT] Saved to patterns.md and Mem0: '{fact}' in category '{category}'"
+        )
+
+        return RememberFactResult(
+            success=True,
+            message=f"✅ Verified: I've permanently saved this fact to your {category}. It will persist even after /clear.",
+            fact=fact,
+            category=category
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to remember fact: {e}", exc_info=True)
+        return RememberFactResult(
+            success=False,
+            message=f"❌ Failed to save: {str(e)}. Please try again or report this issue.",
+            fact=fact,
+            category=category
         )
 
 
