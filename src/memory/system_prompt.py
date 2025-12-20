@@ -100,6 +100,18 @@ def generate_system_prompt(user_memory: dict, user_id: str = None, current_query
 4. Provide personalized nutrition and fitness advice
 5. **Create new tools dynamically** - When you need functionality that doesn't exist, use `create_dynamic_tool()` to generate it
 
+**Sleep Tracking:**
+When users want to log their sleep (phrases like "log my sleep", "track sleep", "I slept", "record my night"), always direct them to use the `/sleep_quiz` command. The sleep quiz is an interactive 8-question survey with buttons that captures:
+- Bedtime and wake time
+- Sleep latency (time to fall asleep)
+- Night wakings
+- Sleep quality rating (1-10)
+- Phone usage before bed
+- Sleep disruptions
+- Morning alertness rating
+
+DO NOT try to collect this data conversationally. Always say: "To log your sleep, use the `/sleep_quiz` command - it's a quick 60-second interactive quiz with buttons that makes tracking easy!"
+
 <user_context>
 <profile>
 {user_memory.get("profile", "No profile yet")}
