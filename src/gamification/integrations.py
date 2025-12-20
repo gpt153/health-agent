@@ -22,6 +22,10 @@ from src.gamification import (
     update_streak,
     check_and_award_achievements,
 )
+from src.gamification.motivation_profiles import (
+    get_or_detect_profile,
+    get_motivational_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -141,16 +145,56 @@ async def handle_reminder_completion_gamification(
             result['achievements_unlocked'].append(achievement)
             result['xp_awarded'] += ach_xp
 
-        # Build user-facing message
+        # Get user's motivation profile for personalized messaging
+        profile = await get_or_detect_profile(user_id)
+
+        # Build user-facing message with adaptive personalization
         message_parts = []
 
-        # XP message
-        if bonus_xp > 0:
-            message_parts.append(f"⭐ +{total_xp} XP (+{bonus_xp} on-time bonus)")
+        # Personalized completion message based on motivation profile
+        if result['level_up']:
+            # Milestone context: leveled up
+            motivational_msg = get_motivational_message(
+                profile,
+                context='milestone',
+                xp_earned=total_xp
+            )
+            message_parts.append(motivational_msg)
+        elif streak_result.get('milestone_reached'):
+            # Milestone context: streak milestone
+            motivational_msg = get_motivational_message(
+                profile,
+                context='milestone',
+                streak_count=result['current_streak']
+            )
+            message_parts.append(motivational_msg)
+        elif achievements:
+            # Milestone context: achievement unlocked
+            motivational_msg = get_motivational_message(
+                profile,
+                context='milestone',
+                achievement_name=achievements[0]['name']
+            )
+            message_parts.append(motivational_msg)
         else:
-            message_parts.append(f"⭐ +{total_xp} XP")
+            # Regular completion context
+            motivational_msg = get_motivational_message(
+                profile,
+                context='completion',
+                xp_earned=total_xp
+            )
+            message_parts.append(motivational_msg)
 
-        # Level up message
+        # Add detailed stats below motivational message
+        stats_parts = []
+
+        # XP details
+        if bonus_xp > 0:
+            stats_parts.append(f"⭐ +{total_xp} XP (+{bonus_xp} on-time bonus)")
+        else:
+            stats_parts.append(f"⭐ +{total_xp} XP")
+
+        # Level details
         if result['level_up']:
             tier_emoji = {
                 'bronze': '🥉',
@@ -160,24 +204,28 @@ async def handle_reminder_completion_gamification(
             }
             tier = xp_result.get('new_tier', 'bronze')
             tier_symbol = tier_emoji.get(tier, '⭐')
-            message_parts.append(f"{tier_symbol} **Level {result['new_level']}!**")
+            stats_parts.append(f"{tier_symbol} Level {result['new_level']} reached")
 
-        # Streak message
+        # Streak details
         if result['current_streak'] > 0:
             if streak_result.get('milestone_reached'):
-                message_parts.append(
-                    f"🔥 **{result['current_streak']}-day streak!** "
-                    f"(+{streak_result.get('xp_bonus', 0)} XP bonus)"
+                stats_parts.append(
+                    f"🔥 {result['current_streak']}-day streak "
+                    f"(+{streak_result.get('xp_bonus', 0)} XP)"
                 )
             else:
-                message_parts.append(f"🔥 {result['current_streak']}-day streak")
+                stats_parts.append(f"🔥 {result['current_streak']}-day streak")
 
-        # Achievement messages
+        # Achievement details
         for achievement in achievements:
-            message_parts.append(
-                f"{achievement['icon']} **Achievement: {achievement['name']}!** "
+            stats_parts.append(
+                f"{achievement['icon']} {achievement['name']} "
                 f"(+{achievement['xp_reward']} XP)"
             )
+
+        # Combine: motivational message + stats
+        if stats_parts:
+            message_parts.append('\n' + '\n'.join(stats_parts))
 
         result['message'] = '\n'.join(message_parts)
 

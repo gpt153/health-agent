@@ -24,6 +24,11 @@ from src.gamification.dashboards import (
     get_monthly_report,
     get_progress_chart
 )
+from src.gamification.motivation_profiles import (
+    get_or_detect_profile,
+    format_profile_display,
+    MOTIVATION_TYPES
+)
 from datetime import date
 
 logger = logging.getLogger(__name__)
@@ -537,3 +542,28 @@ async def get_progress_chart_tool(ctx: RunContext, days: int = 30) -> str:
     except Exception as e:
         logger.error(f"Error getting progress chart: {e}", exc_info=True)
         return "Sorry, I couldn't retrieve your progress chart right now. Please try again later."
+
+
+async def get_motivation_profile_tool(ctx: RunContext) -> str:
+    """
+    Get user's motivation profile
+
+    Shows what motivates the user (Achiever, Socializer, Explorer, Completionist)
+    and how the system personalizes messaging for them.
+
+    Use this when user asks: "what's my motivation profile", "what motivates me",
+    "why am I getting these messages", "personality type", etc.
+    """
+    try:
+        user_id = ctx.deps.telegram_id
+
+        # Get or detect profile
+        profile = await get_or_detect_profile(user_id)
+
+        # Format for display
+        profile_display = format_profile_display(profile)
+
+        return profile_display
+    except Exception as e:
+        logger.error(f"Error getting motivation profile: {e}", exc_info=True)
+        return "Sorry, I couldn't retrieve your motivation profile right now. Please try again later."

@@ -1382,6 +1382,7 @@ from src.agent.gamification_tools import (
     get_weekly_dashboard_tool,
     get_monthly_dashboard_tool,
     get_progress_chart_tool,
+    get_motivation_profile_tool,
     XPStatusResult,
     StreakStatusResult,
     AchievementStatusResult,
@@ -1550,6 +1551,24 @@ async def get_progress_chart(ctx: RunContext) -> str:
     return await get_progress_chart_tool(ctx)
 
 
+@agent.tool
+async def get_motivation_profile(ctx: RunContext) -> str:
+    """
+    **GET MOTIVATION PROFILE** - Use when user asks about their motivation type or personalization
+
+    Shows user's detected motivation profile (Achiever, Socializer, Explorer, Completionist)
+    and explains how the system adapts messaging for them.
+
+    Example queries:
+    - "What's my motivation profile?"
+    - "What motivates me?"
+    - "Why am I getting these messages?"
+    - "My personality type"
+    - "How does personalization work?"
+    """
+    return await get_motivation_profile_tool(ctx)
+
+
 async def get_agent_response(
     telegram_id: str,
     user_message: str,
@@ -1671,6 +1690,8 @@ async def get_agent_response(
         dynamic_agent.tool(get_weekly_dashboard)
         dynamic_agent.tool(get_monthly_dashboard)
         dynamic_agent.tool(get_progress_chart)
+        # Motivation profile
+        dynamic_agent.tool(get_motivation_profile)
 
         # Register dynamically loaded tools
         tool_manager.register_tools_on_agent(dynamic_agent)
@@ -1723,6 +1744,8 @@ async def get_agent_response(
                 fallback_agent.tool(get_weekly_dashboard)
                 fallback_agent.tool(get_monthly_dashboard)
                 fallback_agent.tool(get_progress_chart)
+                # Motivation profile
+                fallback_agent.tool(get_motivation_profile)
 
                 # Register dynamically loaded tools
                 tool_manager.register_tools_on_agent(fallback_agent)
