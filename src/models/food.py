@@ -5,11 +5,22 @@ from pydantic import BaseModel, Field
 from uuid import UUID, uuid4
 
 
+class Micronutrients(BaseModel):
+    """Micronutrient breakdown"""
+    fiber: Optional[float] = None  # grams
+    sodium: Optional[float] = None  # milligrams
+    sugar: Optional[float] = None  # grams
+    vitamin_c: Optional[float] = None  # milligrams
+    calcium: Optional[float] = None  # milligrams
+    iron: Optional[float] = None  # milligrams
+
+
 class FoodMacros(BaseModel):
     """Macronutrient breakdown"""
     protein: float  # grams
     carbs: float  # grams
     fat: float  # grams
+    micronutrients: Optional[Micronutrients] = None
 
 
 class FoodItem(BaseModel):
@@ -18,6 +29,8 @@ class FoodItem(BaseModel):
     quantity: str  # "1 cup", "100g", "1 medium apple"
     calories: int
     macros: FoodMacros
+    verification_source: Optional[str] = None  # "usda", "ai_estimate", etc.
+    confidence_score: Optional[float] = None  # 0.0-1.0 for verification quality
 
 
 class FoodEntry(BaseModel):

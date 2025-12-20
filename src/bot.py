@@ -834,6 +834,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             visual_patterns=visual_patterns
         )
 
+        # Verify nutrition data with USDA database
+        from src.utils.nutrition_search import verify_food_items
+        verified_foods = await verify_food_items(analysis.foods)
+
         # Build response message
         response_lines = ["🍽️ **Food Analysis:**"]
         if caption:
@@ -841,17 +845,34 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         else:
             response_lines.append("")
 
-        for food in analysis.foods:
-            response_lines.append(f"• {food.name} ({food.quantity})")
-            response_lines.append(
-                f"  └ {food.calories} cal | P: {food.macros.protein}g | C: {food.macros.carbs}g | F: {food.macros.fat}g"
-            )
+        for food in verified_foods:
+            # Add verification badge
+            badge = ""
+            if food.verification_source == "usda":
+                badge = " ✓"  # Verified badge
+            elif food.verification_source == "ai_estimate":
+                badge = " ~"  # Estimate badge
 
-        # Calculate totals
-        total_calories = sum(f.calories for f in analysis.foods)
-        total_protein = sum(f.macros.protein for f in analysis.foods)
-        total_carbs = sum(f.macros.carbs for f in analysis.foods)
-        total_fat = sum(f.macros.fat for f in analysis.foods)
+            response_lines.append(f"• {food.name}{badge} ({food.quantity})")
+
+            # Build macro line
+            macro_line = f"  └ {food.calories} cal | P: {food.macros.protein}g | C: {food.macros.carbs}g | F: {food.macros.fat}g"
+
+            # Add fiber and sodium if available
+            if food.macros.micronutrients:
+                micros = food.macros.micronutrients
+                if micros.fiber is not None:
+                    macro_line += f" | Fiber: {micros.fiber}g"
+                if micros.sodium is not None:
+                    macro_line += f" | Sodium: {micros.sodium}mg"
+
+            response_lines.append(macro_line)
+
+        # Calculate totals from verified data
+        total_calories = sum(f.calories for f in verified_foods)
+        total_protein = sum(f.macros.protein for f in verified_foods)
+        total_carbs = sum(f.macros.carbs for f in verified_foods)
+        total_fat = sum(f.macros.fat for f in verified_foods)
 
         response_lines.append(f"\n**Total:** {total_calories} cal | P: {total_protein}g | C: {total_carbs}g | F: {total_fat}g")
         response_lines.append(f"\n_Confidence: {analysis.confidence}_")
@@ -878,7 +899,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             user_id=user_id,
             timestamp=entry_timestamp,
             photo_path=str(photo_path),
-            foods=analysis.foods,
+            foods=verified_foods,  # Use verified data instead of AI estimates
             total_calories=total_calories,
             total_macros=total_macros,
             meal_type=None,  # Can be inferred from time later
@@ -897,9 +918,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(response, parse_mode="Markdown")
 
         # Save to conversation history database with metadata
-        photo_description = f"User sent a food photo. Analysis: {', '.join([f.name for f in analysis.foods])}"
+        photo_description = f"User sent a food photo. Analysis: {', '.join([f.name for f in verified_foods])}"
         photo_metadata = {
-            "foods": [{"name": f.name, "quantity": f.quantity} for f in analysis.foods],
+            "foods": [{"name": f.name, "quantity": f.quantity, "verification_source": f.verification_source} for f in verified_foods],
             "total_calories": total_calories,
             "confidence": analysis.confidence
         }
