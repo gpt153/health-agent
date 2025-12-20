@@ -165,6 +165,15 @@ class AdaptiveSuggestionsResult(BaseModel):
     reminder_name: str
 
 
+class AchievementsResult(BaseModel):
+    """Result of viewing achievements"""
+
+    success: bool
+    message: str
+    unlocked_count: int
+    total_count: int
+
+
 class DynamicToolCreationResult(BaseModel):
     """Result of dynamic tool creation"""
 
@@ -834,6 +843,51 @@ async def suggest_reminder_optimizations(
             message=f"Error analyzing reminder patterns: {str(e)}",
             suggestions=[],
             reminder_name=reminder_description
+        )
+
+
+@agent.tool
+async def get_user_achievements_display(ctx) -> AchievementsResult:
+    """
+    Display all unlocked achievements and progress
+
+    Shows:
+    - Total achievements unlocked
+    - Achievements grouped by category (consistency, milestones, recovery, exploration)
+    - Locked achievements preview (what's still available to unlock)
+    - Badge tier indicators (bronze, silver, gold, platinum)
+
+    Returns:
+        AchievementsResult with formatted achievement display
+    """
+    deps: AgentDeps = ctx.deps
+
+    try:
+        from src.utils.achievement_checker import format_user_achievements_display
+        from src.db.queries import get_all_achievements
+
+        # Get formatted display
+        formatted_message = await format_user_achievements_display(deps.telegram_id)
+
+        # Get counts
+        from src.db.queries import get_user_achievements
+        unlocked = await get_user_achievements(deps.telegram_id)
+        all_achievements = await get_all_achievements()
+
+        return AchievementsResult(
+            success=True,
+            message=formatted_message,
+            unlocked_count=len(unlocked),
+            total_count=len(all_achievements)
+        )
+
+    except Exception as e:
+        logger.error(f"Error displaying achievements: {e}", exc_info=True)
+        return AchievementsResult(
+            success=False,
+            message=f"Error loading achievements: {str(e)}",
+            unlocked_count=0,
+            total_count=0
         )
 
 
@@ -1566,6 +1620,7 @@ async def get_agent_response(
         dynamic_agent.tool(get_reminder_statistics)
         dynamic_agent.tool(compare_all_reminders)
         dynamic_agent.tool(suggest_reminder_optimizations)
+        dynamic_agent.tool(get_user_achievements_display)
         dynamic_agent.tool(get_daily_food_summary)
         dynamic_agent.tool(remember_visual_pattern)
         dynamic_agent.tool(create_dynamic_tool)
@@ -1608,6 +1663,7 @@ async def get_agent_response(
                 fallback_agent.tool(get_reminder_statistics)
                 fallback_agent.tool(compare_all_reminders)
                 fallback_agent.tool(suggest_reminder_optimizations)
+                fallback_agent.tool(get_user_achievements_display)
                 fallback_agent.tool(get_daily_food_summary)
                 fallback_agent.tool(remember_visual_pattern)
                 fallback_agent.tool(create_dynamic_tool)

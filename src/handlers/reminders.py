@@ -106,6 +106,30 @@ async def handle_reminder_completion(update: Update, context: ContextTypes.DEFAU
             f"scheduled={scheduled_time}, completed={completed_at.strftime('%H:%M')}"
         )
 
+        # Check for newly unlocked achievements
+        try:
+            from src.utils.achievement_checker import check_and_unlock_achievements, format_achievement_unlock
+
+            new_achievements = await check_and_unlock_achievements(
+                user_id=user_id,
+                reminder_id=reminder_id,
+                event_type="completion"
+            )
+
+            # Send achievement notifications
+            for achievement in new_achievements:
+                achievement_message = format_achievement_unlock(achievement)
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=achievement_message,
+                    parse_mode="Markdown"
+                )
+                logger.info(f"Achievement unlocked notification sent: {achievement['id']} for user {user_id}")
+
+        except Exception as e:
+            logger.error(f"Error checking achievements: {e}", exc_info=True)
+            # Don't fail the completion if achievement checking fails
+
     except Exception as e:
         logger.error(f"Error handling reminder completion: {e}", exc_info=True)
         await query.edit_message_text(

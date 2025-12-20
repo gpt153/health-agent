@@ -1996,3 +1996,254 @@ async def check_missed_reminder_grace_period(user_id: str, reminder_id: str, sch
             tracking_enabled = reminder.get("enable_completion_tracking", True) if reminder else False
 
             return tracking_enabled and time_since_scheduled >= 2.0
+
+
+# ========================================
+# Phase 4: Gamification Functions
+# ========================================
+
+async def get_all_achievements() -> list[dict]:
+    """Get all achievement definitions"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, name, description, icon, category, criteria, tier
+                FROM achievements
+                ORDER BY
+                    CASE tier
+                        WHEN 'bronze' THEN 1
+                        WHEN 'silver' THEN 2
+                        WHEN 'gold' THEN 3
+                        WHEN 'platinum' THEN 4
+                    END,
+                    name
+                """
+            )
+
+            achievements = []
+            for row in await cur.fetchall():
+                achievements.append({
+                    "id": row[0],
+                    "name": row[1],
+                    "description": row[2],
+                    "icon": row[3],
+                    "category": row[4],
+                    "criteria": row[5],
+                    "tier": row[6]
+                })
+
+            return achievements
+
+
+async def get_user_achievements(user_id: str) -> list[dict]:
+    """Get all achievements unlocked by user"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT
+                    ua.achievement_id,
+                    ua.unlocked_at,
+                    ua.metadata,
+                    a.name,
+                    a.description,
+                    a.icon,
+                    a.category,
+                    a.tier
+                FROM user_achievements ua
+                JOIN achievements a ON ua.achievement_id = a.id
+                WHERE ua.user_id = %s
+                ORDER BY ua.unlocked_at DESC
+                """,
+                (user_id,)
+            )
+
+            achievements = []
+            for row in await cur.fetchall():
+                achievements.append({
+                    "achievement_id": row[0],
+                    "unlocked_at": row[1],
+                    "metadata": row[2],
+                    "name": row[3],
+                    "description": row[4],
+                    "icon": row[5],
+                    "category": row[6],
+                    "tier": row[7]
+                })
+
+            return achievements
+
+
+async def unlock_achievement(
+    user_id: str,
+    achievement_id: str,
+    metadata: dict = None
+) -> bool:
+    """
+    Unlock an achievement for a user
+
+    Returns True if unlocked (new), False if already unlocked
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Try to insert
+            await cur.execute(
+                """
+                INSERT INTO user_achievements (user_id, achievement_id, metadata)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id, achievement_id) DO NOTHING
+                RETURNING id
+                """,
+                (user_id, achievement_id, json.dumps(metadata) if metadata else None)
+            )
+
+            result = await cur.fetchone()
+            await conn.commit()
+
+            return result is not None  # True if inserted, False if already existed
+
+
+async def count_user_completions(user_id: str) -> int:
+    """Count total completions across all reminders"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM reminder_completions
+                WHERE user_id = %s
+                """,
+                (user_id,)
+            )
+
+            return (await cur.fetchone())[0]
+
+
+async def count_early_completions(user_id: str) -> int:
+    """Count completions that were early (before scheduled time)"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM reminder_completions
+                WHERE user_id = %s
+                AND completed_at < scheduled_time
+                """,
+                (user_id,)
+            )
+
+            return (await cur.fetchone())[0]
+
+
+async def count_active_reminders(user_id: str, tracking_enabled: bool = None) -> int:
+    """Count active reminders for user"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            if tracking_enabled is not None:
+                await cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM reminders
+                    WHERE user_id = %s
+                    AND active = true
+                    AND enable_completion_tracking = %s
+                    """,
+                    (user_id, tracking_enabled)
+                )
+            else:
+                await cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM reminders
+                    WHERE user_id = %s
+                    AND active = true
+                    """,
+                    (user_id,)
+                )
+
+            return (await cur.fetchone())[0]
+
+
+async def count_perfect_completion_days(user_id: str) -> int:
+    """
+    Count consecutive days with 100% completion rate
+
+    A perfect day = all scheduled reminders were completed
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # This is a simplified version
+            # Full implementation would check daily completion rates
+            await cur.execute(
+                """
+                WITH daily_stats AS (
+                    SELECT
+                        DATE(scheduled_time) as day,
+                        COUNT(*) as scheduled,
+                        COUNT(completed_at) as completed
+                    FROM reminder_completions
+                    WHERE user_id = %s
+                    GROUP BY DATE(scheduled_time)
+                )
+                SELECT COUNT(*)
+                FROM daily_stats
+                WHERE completed = scheduled
+                """,
+                (user_id,)
+            )
+
+            return (await cur.fetchone())[0]
+
+
+async def check_recovery_pattern(user_id: str, threshold: float) -> bool:
+    """
+    Check if user recovered from low completion rate
+
+    Returns True if user had a week <60% then recovered to >threshold
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Get recent weekly completion rates
+            await cur.execute(
+                """
+                WITH weekly_rates AS (
+                    SELECT
+                        DATE_TRUNC('week', scheduled_time) as week,
+                        COUNT(CASE WHEN completed_at IS NOT NULL THEN 1 END)::float /
+                        COUNT(*)::float as rate
+                    FROM reminder_completions
+                    WHERE user_id = %s
+                    AND scheduled_time > NOW() - INTERVAL '60 days'
+                    GROUP BY DATE_TRUNC('week', scheduled_time)
+                    ORDER BY week DESC
+                    LIMIT 4
+                )
+                SELECT rate FROM weekly_rates
+                """,
+                (user_id,)
+            )
+
+            rates = [row[0] for row in await cur.fetchall()]
+
+            if len(rates) < 2:
+                return False
+
+            # Check if most recent week is above threshold
+            # and previous week(s) were below 60%
+            current_rate = rates[0]
+            had_low_week = any(r < 0.6 for r in rates[1:])
+
+            return current_rate >= threshold and had_low_week
+
+
+async def count_stats_views(user_id: str) -> int:
+    """
+    Count how many times user has viewed statistics
+
+    Note: This would need a tracking table in production.
+    For now, estimate based on reminder analytics calls.
+    """
+    # Placeholder - in production, track this in a separate table
+    return 0  # TODO: Implement stats view tracking
