@@ -2,6 +2,42 @@
 from typing import Dict, List
 
 
+def create_progress_bar(percentage: float, width: int = 10, filled: str = "█", empty: str = "░") -> str:
+    """
+    Create a text-based progress bar
+
+    Args:
+        percentage: Value between 0.0 and 1.0
+        width: Total width of the bar in characters
+        filled: Character for filled portion
+        empty: Character for empty portion
+
+    Returns:
+        Progress bar string
+    """
+    filled_count = int(percentage * width)
+    empty_count = width - filled_count
+    return filled * filled_count + empty * empty_count
+
+
+def format_percentage_with_bar(value: float, label: str = "", width: int = 10) -> str:
+    """
+    Format percentage with visual bar
+
+    Args:
+        value: Percentage as float (0.0 to 1.0)
+        label: Optional label to prepend
+        width: Width of progress bar
+
+    Returns:
+        Formatted string like "Label: ████████░░ 80%"
+    """
+    bar = create_progress_bar(value, width)
+    percentage_str = f"{value*100:.0f}%"
+    prefix = f"{label}: " if label else ""
+    return f"{prefix}{bar} {percentage_str}"
+
+
 def format_reminder_statistics(analytics: dict, reminder_message: str) -> str:
     """
     Format reminder analytics into user-friendly Telegram message
@@ -22,8 +58,10 @@ def format_reminder_statistics(analytics: dict, reminder_message: str) -> str:
         f"_(Last {analytics['period_days']} days)_\n"
     ]
 
-    # Completion rate with visual indicator
+    # Completion rate with visual indicator and progress bar
     rate = analytics['completion_rate']
+    rate_decimal = rate / 100.0  # Convert to 0.0-1.0
+
     if rate >= 80:
         emoji = "🔥"
         message = "Excellent!"
@@ -37,7 +75,9 @@ def format_reminder_statistics(analytics: dict, reminder_message: str) -> str:
         emoji = "💪"
         message = "You got this!"
 
-    lines.append(f"**{emoji} Completion Rate: {rate}%** {message}")
+    progress_bar = create_progress_bar(rate_decimal)
+    lines.append(f"**{emoji} Completion Rate**")
+    lines.append(f"{progress_bar} **{rate}%** {message}")
     lines.append("")
 
     # Summary stats

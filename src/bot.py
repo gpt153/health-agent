@@ -34,7 +34,11 @@ from src.handlers.reminders import (
     reminder_completion_handler,
     reminder_skip_handler,
     skip_reason_handler,
-    reminder_snooze_handler
+    reminder_snooze_handler,
+    add_note_handler,
+    note_template_handler,
+    note_custom_handler,
+    note_skip_handler
 )
 
 logger = logging.getLogger(__name__)
@@ -689,6 +693,46 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not await is_authorized(user_id):
         return
 
+    # Check if user is entering a custom note
+    if context.user_data.get('awaiting_custom_note'):
+        # Handle cancel command
+        if text.strip().lower() == '/cancel':
+            context.user_data.pop('awaiting_custom_note', None)
+            context.user_data.pop('pending_note', None)
+            await update.message.reply_text("✅ Note entry cancelled.")
+            return
+
+        # Get pending note data
+        pending_note = context.user_data.get('pending_note', {})
+        reminder_id = pending_note.get('reminder_id')
+        scheduled_time = pending_note.get('scheduled_time')
+
+        if not reminder_id or not scheduled_time:
+            await update.message.reply_text("❌ Error: Missing note context. Please try again.")
+            context.user_data.pop('awaiting_custom_note', None)
+            context.user_data.pop('pending_note', None)
+            return
+
+        # Trim note to max 200 characters
+        note_text = text.strip()[:200]
+
+        # Save the note
+        from src.db.queries import update_completion_note
+        try:
+            await update_completion_note(user_id, reminder_id, scheduled_time, note_text)
+            await update.message.reply_text(
+                f"✅ **Note saved!**\n\n📝 \"{note_text}\"\n\nThis will help track patterns over time.",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Error saving custom note: {e}", exc_info=True)
+            await update.message.reply_text("❌ Error saving note. Please try again.")
+
+        # Clean up
+        context.user_data.pop('awaiting_custom_note', None)
+        context.user_data.pop('pending_note', None)
+        return
+
     # DISABLED: Timezone check commented out for debugging
     # Check if user has timezone set (first-time setup)
     # from src.utils.timezone_helper import get_timezone_from_profile, suggest_timezones_for_language, update_timezone_in_profile, normalize_timezone
@@ -1081,6 +1125,13 @@ def create_bot_application() -> Application:
     app.add_handler(skip_reason_handler)
     app.add_handler(reminder_snooze_handler)
     logger.info("Reminder handlers registered (completion, skip, skip_reason, snooze)")
+
+    # Add note handlers
+    app.add_handler(add_note_handler)
+    app.add_handler(note_template_handler)
+    app.add_handler(note_custom_handler)
+    app.add_handler(note_skip_handler)
+    logger.info("Note handlers registered (add_note, template, custom, skip)")
 
     # Add message handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

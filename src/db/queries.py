@@ -2247,3 +2247,33 @@ async def count_stats_views(user_id: str) -> int:
     """
     # Placeholder - in production, track this in a separate table
     return 0  # TODO: Implement stats view tracking
+
+
+async def update_completion_note(
+    user_id: str,
+    reminder_id: str,
+    scheduled_time: str,
+    note: str
+) -> None:
+    """
+    Add or update note for a completion
+
+    Args:
+        user_id: User's Telegram ID
+        reminder_id: Reminder UUID
+        scheduled_time: Scheduled time string
+        note: Note text (max 200 chars)
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE reminder_completions
+                SET notes = %s
+                WHERE user_id = %s
+                AND reminder_id = %s
+                AND scheduled_time = %s
+                """,
+                (note[:200], user_id, reminder_id, scheduled_time)
+            )
+            await conn.commit()
