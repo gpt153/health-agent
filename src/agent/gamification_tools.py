@@ -18,6 +18,13 @@ from src.gamification.achievement_system import (
     format_achievement_display
 )
 from src.gamification.xp_system import get_xp_history
+from src.gamification.dashboards import (
+    get_daily_snapshot,
+    get_weekly_overview,
+    get_monthly_report,
+    get_progress_chart
+)
+from datetime import date
 
 logger = logging.getLogger(__name__)
 
@@ -433,3 +440,100 @@ async def get_progress_summary_tool(ctx: RunContext) -> str:
     except Exception as e:
         logger.error(f"Error getting progress summary: {e}", exc_info=True)
         return "Sorry, I couldn't retrieve your progress summary right now. Please try again later."
+
+
+async def get_daily_dashboard_tool(ctx: RunContext) -> str:
+    """
+    Get today's health snapshot dashboard
+
+    Shows today's XP earned, active streaks, recent achievements,
+    and quick stats. Perfect for checking daily progress.
+
+    Use this when user asks: "how am I doing today", "today's progress",
+    "daily stats", "show my day", etc.
+    """
+    try:
+        user_id = ctx.deps.telegram_id
+        dashboard = await get_daily_snapshot(user_id)
+        return dashboard
+    except Exception as e:
+        logger.error(f"Error getting daily dashboard: {e}", exc_info=True)
+        return "Sorry, I couldn't retrieve your daily dashboard right now. Please try again later."
+
+
+async def get_weekly_dashboard_tool(ctx: RunContext) -> str:
+    """
+    Get this week's health overview
+
+    Shows this week's XP, activities completed, streak changes,
+    achievements unlocked, and trends. Great for weekly check-ins.
+
+    Use this when user asks: "weekly overview", "this week's progress",
+    "how was my week", "weekly stats", etc.
+    """
+    try:
+        user_id = ctx.deps.telegram_id
+        overview = await get_weekly_overview(user_id)
+        return overview
+    except Exception as e:
+        logger.error(f"Error getting weekly overview: {e}", exc_info=True)
+        return "Sorry, I couldn't retrieve your weekly overview right now. Please try again later."
+
+
+async def get_monthly_dashboard_tool(ctx: RunContext, month: Optional[str] = None) -> str:
+    """
+    Get comprehensive monthly health report
+
+    Shows month's total XP, level progression, streaks, achievements,
+    trends, and insights. Perfect for monthly reviews.
+
+    Args:
+        month: Optional month in YYYY-MM format (e.g., "2024-12").
+               If not provided, uses current month.
+
+    Use this when user asks: "monthly report", "this month's stats",
+    "how was my month", "monthly summary", etc.
+    """
+    try:
+        user_id = ctx.deps.telegram_id
+
+        # Parse month if provided
+        month_date = None
+        if month:
+            try:
+                year, month_num = map(int, month.split('-'))
+                month_date = date(year, month_num, 1)
+            except Exception:
+                logger.warning(f"Invalid month format: {month}, using current month")
+
+        report = await get_monthly_report(user_id, month=month_date)
+        return report
+    except Exception as e:
+        logger.error(f"Error getting monthly report: {e}", exc_info=True)
+        return "Sorry, I couldn't retrieve your monthly report right now. Please try again later."
+
+
+async def get_progress_chart_tool(ctx: RunContext, days: int = 30) -> str:
+    """
+    Get visual progress chart showing XP over time
+
+    Displays a text-based chart showing XP earned over the specified
+    time period. Great for visualizing trends and consistency.
+
+    Args:
+        days: Number of days to show (default: 30, max: 90)
+
+    Use this when user asks: "show my progress chart", "XP trend",
+    "progress over time", "visualize my progress", etc.
+    """
+    try:
+        user_id = ctx.deps.telegram_id
+
+        # Limit to reasonable range
+        days = min(max(days, 7), 90)
+
+        chart = await get_progress_chart(user_id, days=days)
+        return chart
+    except Exception as e:
+        logger.error(f"Error getting progress chart: {e}", exc_info=True)
+        return "Sorry, I couldn't retrieve your progress chart right now. Please try again later."

@@ -1378,6 +1378,10 @@ from src.agent.gamification_tools import (
     get_achievement_status_tool,
     get_xp_history_tool,
     get_progress_summary_tool,
+    get_daily_dashboard_tool,
+    get_weekly_dashboard_tool,
+    get_monthly_dashboard_tool,
+    get_progress_chart_tool,
     XPStatusResult,
     StreakStatusResult,
     AchievementStatusResult,
@@ -1472,6 +1476,78 @@ async def get_progress_summary(ctx: RunContext) -> str:
     - "My health journey"
     """
     return await get_progress_summary_tool(ctx)
+
+
+@agent.tool
+async def get_daily_dashboard(ctx: RunContext) -> str:
+    """
+    **GET TODAY'S HEALTH SNAPSHOT** - Use when user asks about today's progress
+
+    Shows today's XP earned, active streaks, recent achievements, and quick stats.
+    Perfect for daily check-ins.
+
+    Example queries:
+    - "How am I doing today?"
+    - "Today's progress"
+    - "Daily stats"
+    - "Show my day"
+    - "What did I do today?"
+    """
+    return await get_daily_dashboard_tool(ctx)
+
+
+@agent.tool
+async def get_weekly_dashboard(ctx: RunContext) -> str:
+    """
+    **GET THIS WEEK'S HEALTH OVERVIEW** - Use when user asks about weekly progress
+
+    Shows this week's XP, activities completed, streak changes, achievements
+    unlocked, and trends. Great for weekly check-ins.
+
+    Example queries:
+    - "Weekly overview"
+    - "This week's progress"
+    - "How was my week?"
+    - "Weekly stats"
+    - "Show my week"
+    """
+    return await get_weekly_dashboard_tool(ctx)
+
+
+@agent.tool
+async def get_monthly_dashboard(ctx: RunContext) -> str:
+    """
+    **GET COMPREHENSIVE MONTHLY REPORT** - Use when user asks about monthly progress
+
+    Shows month's total XP, level progression, streaks, achievements, trends,
+    and insights. Perfect for monthly reviews.
+
+    Example queries:
+    - "Monthly report"
+    - "This month's stats"
+    - "How was my month?"
+    - "Monthly summary"
+    - "Show my month"
+    """
+    return await get_monthly_dashboard_tool(ctx)
+
+
+@agent.tool
+async def get_progress_chart(ctx: RunContext) -> str:
+    """
+    **GET VISUAL PROGRESS CHART** - Use when user wants to visualize progress over time
+
+    Displays a text-based chart showing XP earned over the last 30 days.
+    Great for visualizing trends and consistency.
+
+    Example queries:
+    - "Show my progress chart"
+    - "XP trend"
+    - "Progress over time"
+    - "Visualize my progress"
+    - "How have I been doing?"
+    """
+    return await get_progress_chart_tool(ctx)
 
 
 async def get_agent_response(
@@ -1584,6 +1660,17 @@ async def get_agent_response(
         dynamic_agent.tool(get_daily_food_summary)
         dynamic_agent.tool(remember_visual_pattern)
         dynamic_agent.tool(create_dynamic_tool)
+        # Gamification tools
+        dynamic_agent.tool(get_xp_status)
+        dynamic_agent.tool(get_streaks)
+        dynamic_agent.tool(get_achievements)
+        dynamic_agent.tool(get_xp_history)
+        dynamic_agent.tool(get_progress_summary)
+        # Dashboard tools
+        dynamic_agent.tool(get_daily_dashboard)
+        dynamic_agent.tool(get_weekly_dashboard)
+        dynamic_agent.tool(get_monthly_dashboard)
+        dynamic_agent.tool(get_progress_chart)
 
         # Register dynamically loaded tools
         tool_manager.register_tools_on_agent(dynamic_agent)
@@ -1631,6 +1718,11 @@ async def get_agent_response(
                 fallback_agent.tool(get_achievements)
                 fallback_agent.tool(get_xp_history)
                 fallback_agent.tool(get_progress_summary)
+                # Dashboard tools
+                fallback_agent.tool(get_daily_dashboard)
+                fallback_agent.tool(get_weekly_dashboard)
+                fallback_agent.tool(get_monthly_dashboard)
+                fallback_agent.tool(get_progress_chart)
 
                 # Register dynamically loaded tools
                 tool_manager.register_tools_on_agent(fallback_agent)
