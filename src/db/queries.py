@@ -1785,5 +1785,566 @@ async def get_multi_reminder_comparison(
             
             # Sort by completion rate (descending)
             comparisons.sort(key=lambda x: x["completion_rate"], reverse=True)
-            
+
             return comparisons
+
+
+# ========================================
+# Phase 3: Adaptive Intelligence Functions
+# ========================================
+
+async def detect_timing_patterns(user_id: str, reminder_id: str, days: int = 30) -> dict:
+    """
+    Detect timing patterns in reminder completions
+
+    Returns:
+        {
+            'consistent_early': bool,  # >70% completions are >15 min early
+            'consistent_late': bool,   # >70% completions are >15 min late
+            'average_delay_minutes': float,
+            'weekday_vs_weekend_diff': bool,  # Significant timing difference
+            'suggested_time_adjustment': Optional[int],  # Minutes to adjust
+            'pattern_confidence': float  # 0.0 to 1.0
+        }
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Get completion time patterns
+            await cur.execute(
+                """
+                SELECT
+                    EXTRACT(EPOCH FROM (completed_at - scheduled_time))/60 as delay_minutes,
+                    EXTRACT(DOW FROM scheduled_time) as day_of_week,
+                    completed_at
+                FROM reminder_completions
+                WHERE user_id = %s AND reminder_id = %s
+                AND completed_at > NOW() - INTERVAL '%s days'
+                ORDER BY completed_at DESC
+                """,
+                (user_id, reminder_id, days)
+            )
+
+            completions = await cur.fetchall()
+
+            if len(completions) < 7:  # Need at least a week of data
+                return {
+                    "error": "Insufficient data",
+                    "pattern_confidence": 0.0
+                }
+
+            # Analyze delays
+            delays = [row[0] for row in completions]
+            avg_delay = sum(delays) / len(delays)
+
+            # Check for consistent early/late patterns
+            early_count = sum(1 for d in delays if d < -15)  # >15 min early
+            late_count = sum(1 for d in delays if d > 15)     # >15 min late
+            total = len(delays)
+
+            consistent_early = (early_count / total) > 0.7
+            consistent_late = (late_count / total) > 0.7
+
+            # Weekday vs weekend analysis
+            weekday_delays = [row[0] for row in completions if row[1] in (1, 2, 3, 4, 5)]  # Mon-Fri
+            weekend_delays = [row[0] for row in completions if row[1] in (0, 6)]  # Sat-Sun
+
+            weekday_weekend_diff = False
+            if len(weekday_delays) >= 3 and len(weekend_delays) >= 2:
+                weekday_avg = sum(weekday_delays) / len(weekday_delays)
+                weekend_avg = sum(weekend_delays) / len(weekend_delays)
+                # Significant if >30 min difference
+                weekday_weekend_diff = abs(weekday_avg - weekend_avg) > 30
+
+            # Suggest time adjustment
+            suggested_adjustment = None
+            if consistent_early or consistent_late:
+                # Round to nearest 15 minutes
+                suggested_adjustment = int(round(avg_delay / 15) * 15)
+
+            # Calculate confidence based on data consistency
+            variance = sum((d - avg_delay) ** 2 for d in delays) / len(delays)
+            std_dev = variance ** 0.5
+            # Higher std dev = lower confidence
+            confidence = max(0.0, min(1.0, 1.0 - (std_dev / 60)))  # Normalize to 0-1
+
+            return {
+                "consistent_early": consistent_early,
+                "consistent_late": consistent_late,
+                "average_delay_minutes": round(avg_delay, 1),
+                "weekday_vs_weekend_diff": weekday_weekend_diff,
+                "suggested_time_adjustment": suggested_adjustment,
+                "pattern_confidence": round(confidence, 2),
+                "sample_size": total
+            }
+
+
+async def detect_difficult_days(user_id: str, reminder_id: str, days: int = 30) -> dict:
+    """
+    Detect days of week with low completion rates
+
+    Returns:
+        {
+            'difficult_days': list[str],  # e.g., ['Thursday', 'Saturday']
+            'day_completion_rates': dict[str, float],
+            'worst_day': str,
+            'worst_day_rate': float
+        }
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Get expected completions per day
+            await cur.execute(
+                """
+                SELECT
+                    EXTRACT(DOW FROM scheduled_time) as day_of_week,
+                    COUNT(*) as expected
+                FROM reminder_completions
+                WHERE user_id = %s AND reminder_id = %s
+                AND scheduled_time > NOW() - INTERVAL '%s days'
+                GROUP BY day_of_week
+                """,
+                (user_id, reminder_id, days)
+            )
+
+            expected_by_day = {row[0]: row[1] for row in await cur.fetchall()}
+
+            if not expected_by_day:
+                return {"error": "No completion data"}
+
+            # Get actual completions per day
+            await cur.execute(
+                """
+                SELECT
+                    EXTRACT(DOW FROM scheduled_time) as day_of_week,
+                    COUNT(*) as completed
+                FROM reminder_completions
+                WHERE user_id = %s AND reminder_id = %s
+                AND completed_at IS NOT NULL
+                AND scheduled_time > NOW() - INTERVAL '%s days'
+                GROUP BY day_of_week
+                """,
+                (user_id, reminder_id, days)
+            )
+
+            completed_by_day = {row[0]: row[1] for row in await cur.fetchall()}
+
+            # Calculate completion rates per day
+            day_names = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+            day_rates = {}
+
+            for day_num in expected_by_day.keys():
+                expected = expected_by_day.get(day_num, 0)
+                completed = completed_by_day.get(day_num, 0)
+                rate = completed / expected if expected > 0 else 0.0
+                day_rates[day_names[int(day_num)]] = round(rate, 2)
+
+            # Find difficult days (<50% completion rate)
+            user_avg_rate = sum(day_rates.values()) / len(day_rates) if day_rates else 0.0
+            difficult_days = [
+                day for day, rate in day_rates.items()
+                if rate < 0.5  # Less than 50% completion
+            ]
+
+            # Find worst day
+            worst_day = min(day_rates.items(), key=lambda x: x[1]) if day_rates else (None, 0.0)
+
+            return {
+                "difficult_days": difficult_days,
+                "day_completion_rates": day_rates,
+                "worst_day": worst_day[0],
+                "worst_day_rate": worst_day[1],
+                "average_completion_rate": round(user_avg_rate, 2)
+            }
+
+
+async def generate_adaptive_suggestions(user_id: str, reminder_id: str) -> list[dict]:
+    """
+    Generate personalized suggestions for improving reminder completion
+
+    Returns list of suggestions with:
+        {
+            'type': str,  # 'timing_adjustment', 'difficult_day_support', 'schedule_split'
+            'title': str,
+            'description': str,
+            'action': dict,  # Action parameters
+            'priority': str,  # 'high', 'medium', 'low'
+        }
+    """
+    suggestions = []
+
+    # Get timing patterns
+    timing_patterns = await detect_timing_patterns(user_id, reminder_id)
+
+    if timing_patterns.get("pattern_confidence", 0) > 0.6:
+        # Timing adjustment suggestion
+        if timing_patterns.get("consistent_late"):
+            adjustment = timing_patterns.get("suggested_time_adjustment", 0)
+            if adjustment and abs(adjustment) >= 15:
+                suggestions.append({
+                    "type": "timing_adjustment",
+                    "title": "Adjust Reminder Time",
+                    "description": f"You typically complete this {abs(adjustment)} minutes late. "
+                                   f"Move reminder to better match your natural rhythm?",
+                    "action": {
+                        "adjust_minutes": adjustment
+                    },
+                    "priority": "high" if abs(adjustment) > 30 else "medium"
+                })
+
+        # Weekday/weekend split
+        if timing_patterns.get("weekday_vs_weekend_diff"):
+            suggestions.append({
+                "type": "schedule_split",
+                "title": "Different Schedule for Weekends",
+                "description": "Your completion times differ significantly on weekends. "
+                               "Use separate reminder times for weekdays vs weekends?",
+                "action": {
+                    "enable_split_schedule": True
+                },
+                "priority": "medium"
+            })
+
+    # Get difficult days
+    difficult_days_data = await detect_difficult_days(user_id, reminder_id)
+
+    if difficult_days_data.get("difficult_days"):
+        for day in difficult_days_data["difficult_days"]:
+            rate = difficult_days_data["day_completion_rates"].get(day, 0)
+            suggestions.append({
+                "type": "difficult_day_support",
+                "title": f"{day} Needs Support",
+                "description": f"Your {day} completion rate is {rate*100:.0f}%, well below average. "
+                               f"Add backup reminder or earlier notification on {day}s?",
+                "action": {
+                    "day_of_week": day,
+                    "add_backup_reminder": True
+                },
+                "priority": "high" if rate < 0.3 else "medium"
+            })
+
+    # Sort by priority
+    priority_order = {"high": 0, "medium": 1, "low": 2}
+    suggestions.sort(key=lambda x: priority_order.get(x["priority"], 3))
+
+    return suggestions
+
+
+async def check_missed_reminder_grace_period(user_id: str, reminder_id: str, scheduled_time: datetime) -> bool:
+    """
+    Check if reminder was missed and grace period has passed
+
+    Returns True if:
+    - Reminder was scheduled more than 2 hours ago
+    - No completion recorded
+    - Tracking is enabled
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Check if completion exists
+            await cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM reminder_completions
+                WHERE user_id = %s
+                AND reminder_id = %s
+                AND scheduled_time = %s
+                """,
+                (user_id, reminder_id, scheduled_time)
+            )
+
+            completion_exists = (await cur.fetchone())[0] > 0
+
+            if completion_exists:
+                return False
+
+            # Check if 2+ hours have passed
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
+            time_since_scheduled = (now - scheduled_time).total_seconds() / 3600  # hours
+
+            # Check if reminder has tracking enabled
+            reminder = await get_reminder_by_id(reminder_id)
+            tracking_enabled = reminder.get("enable_completion_tracking", True) if reminder else False
+
+            return tracking_enabled and time_since_scheduled >= 2.0
+
+
+# ========================================
+# Phase 4: Gamification Functions
+# ========================================
+
+async def get_all_achievements() -> list[dict]:
+    """Get all achievement definitions"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, name, description, icon, category, criteria, tier
+                FROM achievements
+                ORDER BY
+                    CASE tier
+                        WHEN 'bronze' THEN 1
+                        WHEN 'silver' THEN 2
+                        WHEN 'gold' THEN 3
+                        WHEN 'platinum' THEN 4
+                    END,
+                    name
+                """
+            )
+
+            achievements = []
+            for row in await cur.fetchall():
+                achievements.append({
+                    "id": row[0],
+                    "name": row[1],
+                    "description": row[2],
+                    "icon": row[3],
+                    "category": row[4],
+                    "criteria": row[5],
+                    "tier": row[6]
+                })
+
+            return achievements
+
+
+async def get_user_achievements(user_id: str) -> list[dict]:
+    """Get all achievements unlocked by user"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT
+                    ua.achievement_id,
+                    ua.unlocked_at,
+                    ua.metadata,
+                    a.name,
+                    a.description,
+                    a.icon,
+                    a.category,
+                    a.tier
+                FROM user_achievements ua
+                JOIN achievements a ON ua.achievement_id = a.id
+                WHERE ua.user_id = %s
+                ORDER BY ua.unlocked_at DESC
+                """,
+                (user_id,)
+            )
+
+            achievements = []
+            for row in await cur.fetchall():
+                achievements.append({
+                    "achievement_id": row[0],
+                    "unlocked_at": row[1],
+                    "metadata": row[2],
+                    "name": row[3],
+                    "description": row[4],
+                    "icon": row[5],
+                    "category": row[6],
+                    "tier": row[7]
+                })
+
+            return achievements
+
+
+async def unlock_achievement(
+    user_id: str,
+    achievement_id: str,
+    metadata: dict = None
+) -> bool:
+    """
+    Unlock an achievement for a user
+
+    Returns True if unlocked (new), False if already unlocked
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Try to insert
+            await cur.execute(
+                """
+                INSERT INTO user_achievements (user_id, achievement_id, metadata)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id, achievement_id) DO NOTHING
+                RETURNING id
+                """,
+                (user_id, achievement_id, json.dumps(metadata) if metadata else None)
+            )
+
+            result = await cur.fetchone()
+            await conn.commit()
+
+            return result is not None  # True if inserted, False if already existed
+
+
+async def count_user_completions(user_id: str) -> int:
+    """Count total completions across all reminders"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM reminder_completions
+                WHERE user_id = %s
+                """,
+                (user_id,)
+            )
+
+            return (await cur.fetchone())[0]
+
+
+async def count_early_completions(user_id: str) -> int:
+    """Count completions that were early (before scheduled time)"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM reminder_completions
+                WHERE user_id = %s
+                AND completed_at < scheduled_time
+                """,
+                (user_id,)
+            )
+
+            return (await cur.fetchone())[0]
+
+
+async def count_active_reminders(user_id: str, tracking_enabled: bool = None) -> int:
+    """Count active reminders for user"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            if tracking_enabled is not None:
+                await cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM reminders
+                    WHERE user_id = %s
+                    AND active = true
+                    AND enable_completion_tracking = %s
+                    """,
+                    (user_id, tracking_enabled)
+                )
+            else:
+                await cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM reminders
+                    WHERE user_id = %s
+                    AND active = true
+                    """,
+                    (user_id,)
+                )
+
+            return (await cur.fetchone())[0]
+
+
+async def count_perfect_completion_days(user_id: str) -> int:
+    """
+    Count consecutive days with 100% completion rate
+
+    A perfect day = all scheduled reminders were completed
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # This is a simplified version
+            # Full implementation would check daily completion rates
+            await cur.execute(
+                """
+                WITH daily_stats AS (
+                    SELECT
+                        DATE(scheduled_time) as day,
+                        COUNT(*) as scheduled,
+                        COUNT(completed_at) as completed
+                    FROM reminder_completions
+                    WHERE user_id = %s
+                    GROUP BY DATE(scheduled_time)
+                )
+                SELECT COUNT(*)
+                FROM daily_stats
+                WHERE completed = scheduled
+                """,
+                (user_id,)
+            )
+
+            return (await cur.fetchone())[0]
+
+
+async def check_recovery_pattern(user_id: str, threshold: float) -> bool:
+    """
+    Check if user recovered from low completion rate
+
+    Returns True if user had a week <60% then recovered to >threshold
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Get recent weekly completion rates
+            await cur.execute(
+                """
+                WITH weekly_rates AS (
+                    SELECT
+                        DATE_TRUNC('week', scheduled_time) as week,
+                        COUNT(CASE WHEN completed_at IS NOT NULL THEN 1 END)::float /
+                        COUNT(*)::float as rate
+                    FROM reminder_completions
+                    WHERE user_id = %s
+                    AND scheduled_time > NOW() - INTERVAL '60 days'
+                    GROUP BY DATE_TRUNC('week', scheduled_time)
+                    ORDER BY week DESC
+                    LIMIT 4
+                )
+                SELECT rate FROM weekly_rates
+                """,
+                (user_id,)
+            )
+
+            rates = [row[0] for row in await cur.fetchall()]
+
+            if len(rates) < 2:
+                return False
+
+            # Check if most recent week is above threshold
+            # and previous week(s) were below 60%
+            current_rate = rates[0]
+            had_low_week = any(r < 0.6 for r in rates[1:])
+
+            return current_rate >= threshold and had_low_week
+
+
+async def count_stats_views(user_id: str) -> int:
+    """
+    Count how many times user has viewed statistics
+
+    Note: This would need a tracking table in production.
+    For now, estimate based on reminder analytics calls.
+    """
+    # Placeholder - in production, track this in a separate table
+    return 0  # TODO: Implement stats view tracking
+
+
+async def update_completion_note(
+    user_id: str,
+    reminder_id: str,
+    scheduled_time: str,
+    note: str
+) -> None:
+    """
+    Add or update note for a completion
+
+    Args:
+        user_id: User's Telegram ID
+        reminder_id: Reminder UUID
+        scheduled_time: Scheduled time string
+        note: Note text (max 200 chars)
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE reminder_completions
+                SET notes = %s
+                WHERE user_id = %s
+                AND reminder_id = %s
+                AND scheduled_time = %s
+                """,
+                (note[:200], user_id, reminder_id, scheduled_time)
+            )
+            await conn.commit()

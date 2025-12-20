@@ -9,6 +9,7 @@ from src.db.queries import save_sleep_entry, get_sleep_entries, log_feature_usag
 from src.models.sleep import SleepEntry
 from src.utils.auth import is_authorized
 from src.i18n.translations import t, get_user_language
+from src.gamification.integrations import handle_sleep_quiz_gamification
 from datetime import datetime, time as time_type
 from uuid import uuid4
 
@@ -543,6 +544,13 @@ async def handle_alertness_callback(update: Update, context: ContextTypes.DEFAUL
         # Save to database
         await save_sleep_entry(entry)
 
+        # Process gamification (XP, streaks, achievements)
+        gamification_result = await handle_sleep_quiz_gamification(
+            user_id=entry.user_id,
+            sleep_entry_id=entry.id,
+            logged_at=entry.logged_at
+        )
+
         # Log feature usage
         await log_feature_usage(entry.user_id, "sleep_tracking")
 
@@ -594,6 +602,11 @@ async def handle_alertness_callback(update: Update, context: ContextTypes.DEFAUL
 {t('summary_alertness', lang=lang, rating=alertness)}
 
 {t('summary_tip', lang=lang, hours=hours, minutes=minutes)}"""
+
+        # Add gamification section if available
+        gamification_msg = gamification_result.get('message', '')
+        if gamification_msg:
+            summary += f"\n\n🎯 **PROGRESS**\n{gamification_msg}"
 
         await query.edit_message_text(summary, parse_mode="Markdown")
 
