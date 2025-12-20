@@ -6,7 +6,7 @@ from typing import Optional
 from uuid import uuid4
 from datetime import datetime
 
-from pydantic_ai import Agent, ModelMessagesTypeAdapter
+from pydantic_ai import Agent, ModelMessagesTypeAdapter, RunContext
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart
 from pydantic import BaseModel, Field
 
