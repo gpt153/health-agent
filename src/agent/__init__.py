@@ -1368,6 +1368,112 @@ async def _generate_tool_code(
     return template
 
 
+# ============================================
+# Gamification Tools
+# ============================================
+
+from src.agent.gamification_tools import (
+    get_xp_status_tool,
+    get_streak_status_tool,
+    get_achievement_status_tool,
+    get_xp_history_tool,
+    get_progress_summary_tool,
+    XPStatusResult,
+    StreakStatusResult,
+    AchievementStatusResult,
+    XPHistoryResult
+)
+
+
+@agent.tool
+async def get_xp_status(ctx: RunContext) -> XPStatusResult:
+    """
+    **GET XP AND LEVEL STATUS** - Use when user asks about XP, level, or progress
+
+    Shows user's current XP, level, tier (Bronze/Silver/Gold/Platinum),
+    and progress toward next level.
+
+    Example queries:
+    - "What's my XP?"
+    - "What level am I?"
+    - "How much XP do I have?"
+    - "Show my progress"
+    - "Am I close to leveling up?"
+    """
+    return await get_xp_status_tool(ctx)
+
+
+@agent.tool
+async def get_streaks(ctx: RunContext) -> StreakStatusResult:
+    """
+    **GET CURRENT STREAKS** - Use when user asks about streaks
+
+    Shows all active streaks (medication, nutrition, exercise, sleep, etc.)
+    with current counts and best streaks.
+
+    Example queries:
+    - "What are my streaks?"
+    - "Show my streaks"
+    - "How long is my medication streak?"
+    - "Am I on a streak?"
+    - "What's my longest streak?"
+    """
+    return await get_streak_status_tool(ctx)
+
+
+@agent.tool
+async def get_achievements(ctx: RunContext) -> AchievementStatusResult:
+    """
+    **GET ACHIEVEMENTS** - Use when user asks about achievements or badges
+
+    Shows unlocked achievements and progress toward locked ones.
+    Also shows achievements user is close to unlocking.
+
+    Example queries:
+    - "What achievements have I unlocked?"
+    - "Show my badges"
+    - "What achievements can I get?"
+    - "Am I close to any achievements?"
+    - "Show my achievements"
+    """
+    return await get_achievement_status_tool(ctx)
+
+
+@agent.tool
+async def get_xp_history(ctx: RunContext) -> XPHistoryResult:
+    """
+    **GET XP HISTORY** - Use when user asks about recent XP or activity
+
+    Shows recent XP transactions from health activities, streaks, and achievements.
+
+    Example queries:
+    - "What XP did I earn today?"
+    - "Show my recent XP"
+    - "How did I earn XP?"
+    - "XP history"
+    - "Recent activity"
+    """
+    return await get_xp_history_tool(ctx)
+
+
+@agent.tool
+async def get_progress_summary(ctx: RunContext) -> str:
+    """
+    **GET COMPLETE PROGRESS SUMMARY** - Use for comprehensive progress overview
+
+    Shows XP, level, streaks, and achievements in a single summary.
+    Best for when user wants a complete overview.
+
+    Example queries:
+    - "Show my progress"
+    - "How am I doing?"
+    - "Summary"
+    - "Stats"
+    - "My health journey"
+    """
+    return await get_progress_summary_tool(ctx)
+
+
 async def get_agent_response(
     telegram_id: str,
     user_message: str,
@@ -1519,6 +1625,12 @@ async def get_agent_response(
                 fallback_agent.tool(get_daily_food_summary)
                 fallback_agent.tool(remember_visual_pattern)
                 fallback_agent.tool(create_dynamic_tool)
+                # Gamification tools
+                fallback_agent.tool(get_xp_status)
+                fallback_agent.tool(get_streaks)
+                fallback_agent.tool(get_achievements)
+                fallback_agent.tool(get_xp_history)
+                fallback_agent.tool(get_progress_summary)
 
                 # Register dynamically loaded tools
                 tool_manager.register_tools_on_agent(fallback_agent)
