@@ -6,6 +6,7 @@ from telegram.ext import CallbackQueryHandler, ContextTypes
 from src.db.queries import save_reminder_completion, get_reminder_by_id
 from src.utils.auth import is_authorized
 from src.utils.note_templates import get_note_templates
+from src.gamification.integrations import handle_reminder_completion_gamification
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,14 @@ async def handle_reminder_completion(update: Update, context: ContextTypes.DEFAU
             notes=None
         )
 
+        # Process gamification (XP, streaks, achievements)
+        gamification_result = await handle_reminder_completion_gamification(
+            user_id=user_id,
+            reminder_id=reminder_id,
+            completed_at=completed_at,
+            scheduled_time=scheduled_time
+        )
+
         # Update message to show completion
         original_text = query.message.text
 
@@ -84,7 +93,9 @@ async def handle_reminder_completion(update: Update, context: ContextTypes.DEFAU
             else:
                 time_note = "✅ Completed early!"
 
-            # Update message
+            # Update message with gamification info
+            gamification_msg = gamification_result.get('message', '')
+
             completion_message = (
                 f"{original_text}\n\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
@@ -93,9 +104,18 @@ async def handle_reminder_completion(update: Update, context: ContextTypes.DEFAU
                 f"✅ Completed: {actual_time}"
             )
 
+            # Add gamification section if available
+            if gamification_msg:
+                completion_message += f"\n\n🎯 **PROGRESS**\n{gamification_msg}"
+
         except Exception as e:
             logger.error(f"Error formatting completion message: {e}", exc_info=True)
             completion_message = f"{original_text}\n\n✅ Marked as completed at {completed_at.strftime('%H:%M')}"
+
+            # Add gamification even on error
+            gamification_msg = gamification_result.get('message', '')
+            if gamification_msg:
+                completion_message += f"\n\n🎯 **PROGRESS**\n{gamification_msg}"
 
         # Add "Add Note" button
         keyboard = [

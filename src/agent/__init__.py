@@ -1512,6 +1512,262 @@ async def _generate_tool_code(
     return template
 
 
+# ============================================
+# Gamification Tools
+# ============================================
+
+from src.agent.gamification_tools import (
+    get_xp_status_tool,
+    get_streak_status_tool,
+    get_achievement_status_tool,
+    get_xp_history_tool,
+    get_progress_summary_tool,
+    get_daily_dashboard_tool,
+    get_weekly_dashboard_tool,
+    get_monthly_dashboard_tool,
+    get_progress_chart_tool,
+    get_motivation_profile_tool,
+    browse_challenges_tool,
+    start_challenge_tool,
+    get_my_challenges_tool,
+    XPStatusResult,
+    StreakStatusResult,
+    AchievementStatusResult,
+    XPHistoryResult
+)
+
+
+@agent.tool
+async def get_xp_status(ctx: RunContext) -> XPStatusResult:
+    """
+    **GET XP AND LEVEL STATUS** - Use when user asks about XP, level, or progress
+
+    Shows user's current XP, level, tier (Bronze/Silver/Gold/Platinum),
+    and progress toward next level.
+
+    Example queries:
+    - "What's my XP?"
+    - "What level am I?"
+    - "How much XP do I have?"
+    - "Show my progress"
+    - "Am I close to leveling up?"
+    """
+    return await get_xp_status_tool(ctx)
+
+
+@agent.tool
+async def get_streaks(ctx: RunContext) -> StreakStatusResult:
+    """
+    **GET CURRENT STREAKS** - Use when user asks about streaks
+
+    Shows all active streaks (medication, nutrition, exercise, sleep, etc.)
+    with current counts and best streaks.
+
+    Example queries:
+    - "What are my streaks?"
+    - "Show my streaks"
+    - "How long is my medication streak?"
+    - "Am I on a streak?"
+    - "What's my longest streak?"
+    """
+    return await get_streak_status_tool(ctx)
+
+
+@agent.tool
+async def get_achievements(ctx: RunContext) -> AchievementStatusResult:
+    """
+    **GET ACHIEVEMENTS** - Use when user asks about achievements or badges
+
+    Shows unlocked achievements and progress toward locked ones.
+    Also shows achievements user is close to unlocking.
+
+    Example queries:
+    - "What achievements have I unlocked?"
+    - "Show my badges"
+    - "What achievements can I get?"
+    - "Am I close to any achievements?"
+    - "Show my achievements"
+    """
+    return await get_achievement_status_tool(ctx)
+
+
+@agent.tool
+async def get_xp_history(ctx: RunContext) -> XPHistoryResult:
+    """
+    **GET XP HISTORY** - Use when user asks about recent XP or activity
+
+    Shows recent XP transactions from health activities, streaks, and achievements.
+
+    Example queries:
+    - "What XP did I earn today?"
+    - "Show my recent XP"
+    - "How did I earn XP?"
+    - "XP history"
+    - "Recent activity"
+    """
+    return await get_xp_history_tool(ctx)
+
+
+@agent.tool
+async def get_progress_summary(ctx: RunContext) -> str:
+    """
+    **GET COMPLETE PROGRESS SUMMARY** - Use for comprehensive progress overview
+
+    Shows XP, level, streaks, and achievements in a single summary.
+    Best for when user wants a complete overview.
+
+    Example queries:
+    - "Show my progress"
+    - "How am I doing?"
+    - "Summary"
+    - "Stats"
+    - "My health journey"
+    """
+    return await get_progress_summary_tool(ctx)
+
+
+@agent.tool
+async def get_daily_dashboard(ctx: RunContext) -> str:
+    """
+    **GET TODAY'S HEALTH SNAPSHOT** - Use when user asks about today's progress
+
+    Shows today's XP earned, active streaks, recent achievements, and quick stats.
+    Perfect for daily check-ins.
+
+    Example queries:
+    - "How am I doing today?"
+    - "Today's progress"
+    - "Daily stats"
+    - "Show my day"
+    - "What did I do today?"
+    """
+    return await get_daily_dashboard_tool(ctx)
+
+
+@agent.tool
+async def get_weekly_dashboard(ctx: RunContext) -> str:
+    """
+    **GET THIS WEEK'S HEALTH OVERVIEW** - Use when user asks about weekly progress
+
+    Shows this week's XP, activities completed, streak changes, achievements
+    unlocked, and trends. Great for weekly check-ins.
+
+    Example queries:
+    - "Weekly overview"
+    - "This week's progress"
+    - "How was my week?"
+    - "Weekly stats"
+    - "Show my week"
+    """
+    return await get_weekly_dashboard_tool(ctx)
+
+
+@agent.tool
+async def get_monthly_dashboard(ctx: RunContext) -> str:
+    """
+    **GET COMPREHENSIVE MONTHLY REPORT** - Use when user asks about monthly progress
+
+    Shows month's total XP, level progression, streaks, achievements, trends,
+    and insights. Perfect for monthly reviews.
+
+    Example queries:
+    - "Monthly report"
+    - "This month's stats"
+    - "How was my month?"
+    - "Monthly summary"
+    - "Show my month"
+    """
+    return await get_monthly_dashboard_tool(ctx)
+
+
+@agent.tool
+async def get_progress_chart(ctx: RunContext) -> str:
+    """
+    **GET VISUAL PROGRESS CHART** - Use when user wants to visualize progress over time
+
+    Displays a text-based chart showing XP earned over the last 30 days.
+    Great for visualizing trends and consistency.
+
+    Example queries:
+    - "Show my progress chart"
+    - "XP trend"
+    - "Progress over time"
+    - "Visualize my progress"
+    - "How have I been doing?"
+    """
+    return await get_progress_chart_tool(ctx)
+
+
+@agent.tool
+async def get_motivation_profile(ctx: RunContext) -> str:
+    """
+    **GET MOTIVATION PROFILE** - Use when user asks about their motivation type or personalization
+
+    Shows user's detected motivation profile (Achiever, Socializer, Explorer, Completionist)
+    and explains how the system adapts messaging for them.
+
+    Example queries:
+    - "What's my motivation profile?"
+    - "What motivates me?"
+    - "Why am I getting these messages?"
+    - "My personality type"
+    - "How does personalization work?"
+    """
+    return await get_motivation_profile_tool(ctx)
+
+
+@agent.tool
+async def browse_challenges(ctx: RunContext, difficulty: Optional[str] = None) -> str:
+    """
+    **BROWSE CHALLENGES** - Use when user wants to see available challenges
+
+    Shows all health challenges from the library, optionally filtered by difficulty.
+
+    Example queries:
+    - "What challenges are available?"
+    - "Show me challenges"
+    - "What can I do?"
+    - "Easy challenges"
+    - "Show hard challenges"
+    """
+    return await browse_challenges_tool(ctx, difficulty)
+
+
+@agent.tool
+async def start_challenge(ctx: RunContext, challenge_name: str) -> str:
+    """
+    **START CHALLENGE** - Use when user wants to begin a challenge
+
+    Starts a specific challenge for the user.
+
+    Args:
+        challenge_name: Name of the challenge to start
+
+    Example queries:
+    - "Start Week Warrior"
+    - "Begin the medication master challenge"
+    - "I want to do the XP accumulator"
+    """
+    return await start_challenge_tool(ctx, challenge_name)
+
+
+@agent.tool
+async def get_my_challenges(ctx: RunContext) -> str:
+    """
+    **GET MY CHALLENGES** - Use when user asks about their challenge progress
+
+    Shows user's active and completed challenges with progress tracking.
+
+    Example queries:
+    - "My challenges"
+    - "What challenges am I doing?"
+    - "Show my progress"
+    - "Challenge status"
+    - "How am I doing on challenges?"
+    """
+    return await get_my_challenges_tool(ctx)
+
+
 async def get_agent_response(
     telegram_id: str,
     user_message: str,
@@ -1624,6 +1880,23 @@ async def get_agent_response(
         dynamic_agent.tool(get_daily_food_summary)
         dynamic_agent.tool(remember_visual_pattern)
         dynamic_agent.tool(create_dynamic_tool)
+        # Gamification tools
+        dynamic_agent.tool(get_xp_status)
+        dynamic_agent.tool(get_streaks)
+        dynamic_agent.tool(get_achievements)
+        dynamic_agent.tool(get_xp_history)
+        dynamic_agent.tool(get_progress_summary)
+        # Dashboard tools
+        dynamic_agent.tool(get_daily_dashboard)
+        dynamic_agent.tool(get_weekly_dashboard)
+        dynamic_agent.tool(get_monthly_dashboard)
+        dynamic_agent.tool(get_progress_chart)
+        # Motivation profile
+        dynamic_agent.tool(get_motivation_profile)
+        # Challenges
+        dynamic_agent.tool(browse_challenges)
+        dynamic_agent.tool(start_challenge)
+        dynamic_agent.tool(get_my_challenges)
 
         # Register dynamically loaded tools
         tool_manager.register_tools_on_agent(dynamic_agent)
@@ -1667,6 +1940,23 @@ async def get_agent_response(
                 fallback_agent.tool(get_daily_food_summary)
                 fallback_agent.tool(remember_visual_pattern)
                 fallback_agent.tool(create_dynamic_tool)
+                # Gamification tools
+                fallback_agent.tool(get_xp_status)
+                fallback_agent.tool(get_streaks)
+                fallback_agent.tool(get_achievements)
+                fallback_agent.tool(get_xp_history)
+                fallback_agent.tool(get_progress_summary)
+                # Dashboard tools
+                fallback_agent.tool(get_daily_dashboard)
+                fallback_agent.tool(get_weekly_dashboard)
+                fallback_agent.tool(get_monthly_dashboard)
+                fallback_agent.tool(get_progress_chart)
+                # Motivation profile
+                fallback_agent.tool(get_motivation_profile)
+                # Challenges
+                fallback_agent.tool(browse_challenges)
+                fallback_agent.tool(start_challenge)
+                fallback_agent.tool(get_my_challenges)
 
                 # Register dynamically loaded tools
                 tool_manager.register_tools_on_agent(fallback_agent)
