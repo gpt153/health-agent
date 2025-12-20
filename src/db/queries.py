@@ -1714,5 +1714,285 @@ async def get_multi_reminder_comparison(
             
             # Sort by completion rate (descending)
             comparisons.sort(key=lambda x: x["completion_rate"], reverse=True)
-            
+
             return comparisons
+
+
+# ========================================
+# Phase 3: Adaptive Intelligence Functions
+# ========================================
+
+async def detect_timing_patterns(user_id: str, reminder_id: str, days: int = 30) -> dict:
+    """
+    Detect timing patterns in reminder completions
+
+    Returns:
+        {
+            'consistent_early': bool,  # >70% completions are >15 min early
+            'consistent_late': bool,   # >70% completions are >15 min late
+            'average_delay_minutes': float,
+            'weekday_vs_weekend_diff': bool,  # Significant timing difference
+            'suggested_time_adjustment': Optional[int],  # Minutes to adjust
+            'pattern_confidence': float  # 0.0 to 1.0
+        }
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Get completion time patterns
+            await cur.execute(
+                """
+                SELECT
+                    EXTRACT(EPOCH FROM (completed_at - scheduled_time))/60 as delay_minutes,
+                    EXTRACT(DOW FROM scheduled_time) as day_of_week,
+                    completed_at
+                FROM reminder_completions
+                WHERE user_id = %s AND reminder_id = %s
+                AND completed_at > NOW() - INTERVAL '%s days'
+                ORDER BY completed_at DESC
+                """,
+                (user_id, reminder_id, days)
+            )
+
+            completions = await cur.fetchall()
+
+            if len(completions) < 7:  # Need at least a week of data
+                return {
+                    "error": "Insufficient data",
+                    "pattern_confidence": 0.0
+                }
+
+            # Analyze delays
+            delays = [row[0] for row in completions]
+            avg_delay = sum(delays) / len(delays)
+
+            # Check for consistent early/late patterns
+            early_count = sum(1 for d in delays if d < -15)  # >15 min early
+            late_count = sum(1 for d in delays if d > 15)     # >15 min late
+            total = len(delays)
+
+            consistent_early = (early_count / total) > 0.7
+            consistent_late = (late_count / total) > 0.7
+
+            # Weekday vs weekend analysis
+            weekday_delays = [row[0] for row in completions if row[1] in (1, 2, 3, 4, 5)]  # Mon-Fri
+            weekend_delays = [row[0] for row in completions if row[1] in (0, 6)]  # Sat-Sun
+
+            weekday_weekend_diff = False
+            if len(weekday_delays) >= 3 and len(weekend_delays) >= 2:
+                weekday_avg = sum(weekday_delays) / len(weekday_delays)
+                weekend_avg = sum(weekend_delays) / len(weekend_delays)
+                # Significant if >30 min difference
+                weekday_weekend_diff = abs(weekday_avg - weekend_avg) > 30
+
+            # Suggest time adjustment
+            suggested_adjustment = None
+            if consistent_early or consistent_late:
+                # Round to nearest 15 minutes
+                suggested_adjustment = int(round(avg_delay / 15) * 15)
+
+            # Calculate confidence based on data consistency
+            variance = sum((d - avg_delay) ** 2 for d in delays) / len(delays)
+            std_dev = variance ** 0.5
+            # Higher std dev = lower confidence
+            confidence = max(0.0, min(1.0, 1.0 - (std_dev / 60)))  # Normalize to 0-1
+
+            return {
+                "consistent_early": consistent_early,
+                "consistent_late": consistent_late,
+                "average_delay_minutes": round(avg_delay, 1),
+                "weekday_vs_weekend_diff": weekday_weekend_diff,
+                "suggested_time_adjustment": suggested_adjustment,
+                "pattern_confidence": round(confidence, 2),
+                "sample_size": total
+            }
+
+
+async def detect_difficult_days(user_id: str, reminder_id: str, days: int = 30) -> dict:
+    """
+    Detect days of week with low completion rates
+
+    Returns:
+        {
+            'difficult_days': list[str],  # e.g., ['Thursday', 'Saturday']
+            'day_completion_rates': dict[str, float],
+            'worst_day': str,
+            'worst_day_rate': float
+        }
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Get expected completions per day
+            await cur.execute(
+                """
+                SELECT
+                    EXTRACT(DOW FROM scheduled_time) as day_of_week,
+                    COUNT(*) as expected
+                FROM reminder_completions
+                WHERE user_id = %s AND reminder_id = %s
+                AND scheduled_time > NOW() - INTERVAL '%s days'
+                GROUP BY day_of_week
+                """,
+                (user_id, reminder_id, days)
+            )
+
+            expected_by_day = {row[0]: row[1] for row in await cur.fetchall()}
+
+            if not expected_by_day:
+                return {"error": "No completion data"}
+
+            # Get actual completions per day
+            await cur.execute(
+                """
+                SELECT
+                    EXTRACT(DOW FROM scheduled_time) as day_of_week,
+                    COUNT(*) as completed
+                FROM reminder_completions
+                WHERE user_id = %s AND reminder_id = %s
+                AND completed_at IS NOT NULL
+                AND scheduled_time > NOW() - INTERVAL '%s days'
+                GROUP BY day_of_week
+                """,
+                (user_id, reminder_id, days)
+            )
+
+            completed_by_day = {row[0]: row[1] for row in await cur.fetchall()}
+
+            # Calculate completion rates per day
+            day_names = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+            day_rates = {}
+
+            for day_num in expected_by_day.keys():
+                expected = expected_by_day.get(day_num, 0)
+                completed = completed_by_day.get(day_num, 0)
+                rate = completed / expected if expected > 0 else 0.0
+                day_rates[day_names[int(day_num)]] = round(rate, 2)
+
+            # Find difficult days (<50% completion rate)
+            user_avg_rate = sum(day_rates.values()) / len(day_rates) if day_rates else 0.0
+            difficult_days = [
+                day for day, rate in day_rates.items()
+                if rate < 0.5  # Less than 50% completion
+            ]
+
+            # Find worst day
+            worst_day = min(day_rates.items(), key=lambda x: x[1]) if day_rates else (None, 0.0)
+
+            return {
+                "difficult_days": difficult_days,
+                "day_completion_rates": day_rates,
+                "worst_day": worst_day[0],
+                "worst_day_rate": worst_day[1],
+                "average_completion_rate": round(user_avg_rate, 2)
+            }
+
+
+async def generate_adaptive_suggestions(user_id: str, reminder_id: str) -> list[dict]:
+    """
+    Generate personalized suggestions for improving reminder completion
+
+    Returns list of suggestions with:
+        {
+            'type': str,  # 'timing_adjustment', 'difficult_day_support', 'schedule_split'
+            'title': str,
+            'description': str,
+            'action': dict,  # Action parameters
+            'priority': str,  # 'high', 'medium', 'low'
+        }
+    """
+    suggestions = []
+
+    # Get timing patterns
+    timing_patterns = await detect_timing_patterns(user_id, reminder_id)
+
+    if timing_patterns.get("pattern_confidence", 0) > 0.6:
+        # Timing adjustment suggestion
+        if timing_patterns.get("consistent_late"):
+            adjustment = timing_patterns.get("suggested_time_adjustment", 0)
+            if adjustment and abs(adjustment) >= 15:
+                suggestions.append({
+                    "type": "timing_adjustment",
+                    "title": "Adjust Reminder Time",
+                    "description": f"You typically complete this {abs(adjustment)} minutes late. "
+                                   f"Move reminder to better match your natural rhythm?",
+                    "action": {
+                        "adjust_minutes": adjustment
+                    },
+                    "priority": "high" if abs(adjustment) > 30 else "medium"
+                })
+
+        # Weekday/weekend split
+        if timing_patterns.get("weekday_vs_weekend_diff"):
+            suggestions.append({
+                "type": "schedule_split",
+                "title": "Different Schedule for Weekends",
+                "description": "Your completion times differ significantly on weekends. "
+                               "Use separate reminder times for weekdays vs weekends?",
+                "action": {
+                    "enable_split_schedule": True
+                },
+                "priority": "medium"
+            })
+
+    # Get difficult days
+    difficult_days_data = await detect_difficult_days(user_id, reminder_id)
+
+    if difficult_days_data.get("difficult_days"):
+        for day in difficult_days_data["difficult_days"]:
+            rate = difficult_days_data["day_completion_rates"].get(day, 0)
+            suggestions.append({
+                "type": "difficult_day_support",
+                "title": f"{day} Needs Support",
+                "description": f"Your {day} completion rate is {rate*100:.0f}%, well below average. "
+                               f"Add backup reminder or earlier notification on {day}s?",
+                "action": {
+                    "day_of_week": day,
+                    "add_backup_reminder": True
+                },
+                "priority": "high" if rate < 0.3 else "medium"
+            })
+
+    # Sort by priority
+    priority_order = {"high": 0, "medium": 1, "low": 2}
+    suggestions.sort(key=lambda x: priority_order.get(x["priority"], 3))
+
+    return suggestions
+
+
+async def check_missed_reminder_grace_period(user_id: str, reminder_id: str, scheduled_time: datetime) -> bool:
+    """
+    Check if reminder was missed and grace period has passed
+
+    Returns True if:
+    - Reminder was scheduled more than 2 hours ago
+    - No completion recorded
+    - Tracking is enabled
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Check if completion exists
+            await cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM reminder_completions
+                WHERE user_id = %s
+                AND reminder_id = %s
+                AND scheduled_time = %s
+                """,
+                (user_id, reminder_id, scheduled_time)
+            )
+
+            completion_exists = (await cur.fetchone())[0] > 0
+
+            if completion_exists:
+                return False
+
+            # Check if 2+ hours have passed
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
+            time_since_scheduled = (now - scheduled_time).total_seconds() / 3600  # hours
+
+            # Check if reminder has tracking enabled
+            reminder = await get_reminder_by_id(reminder_id)
+            tracking_enabled = reminder.get("enable_completion_tracking", True) if reminder else False
+
+            return tracking_enabled and time_since_scheduled >= 2.0

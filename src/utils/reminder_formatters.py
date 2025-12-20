@@ -280,3 +280,38 @@ def format_streak_notification(
             )
     else:
         return f"{fire_emoji} {streak_count}-day streak for {reminder_message}!"
+
+
+def format_adaptive_suggestions(suggestions: list[dict], reminder_name: str) -> str:
+    """
+    Format adaptive suggestions into user-friendly message
+
+    Args:
+        suggestions: List of suggestion dicts from generate_adaptive_suggestions()
+        reminder_name: Name of the reminder
+
+    Returns:
+        Formatted Markdown string
+    """
+    if not suggestions:
+        return f"✅ Your '{reminder_name}' reminder is working great! No optimizations needed right now."
+
+    lines = [
+        f"💡 **Smart Suggestions for: {reminder_name}**\n",
+        f"Based on your completion patterns, here are some ways to improve:\n"
+    ]
+
+    for i, suggestion in enumerate(suggestions, 1):
+        priority_emoji = {
+            "high": "🔴",
+            "medium": "🟡",
+            "low": "🟢"
+        }.get(suggestion["priority"], "⚪")
+
+        lines.append(f"{priority_emoji} **{i}. {suggestion['title']}**")
+        lines.append(f"   {suggestion['description']}\n")
+
+    lines.append("📊 These suggestions are based on your actual completion data over the past 30 days.")
+    lines.append("\nWant me to apply any of these changes? Just let me know!")
+
+    return "\n".join(lines)

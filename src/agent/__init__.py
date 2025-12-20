@@ -23,6 +23,7 @@ from src.db.queries import (
     create_tool_approval_request,
     create_user,
     user_exists,
+    generate_adaptive_suggestions,
 )
 from src.memory.file_manager import MemoryFileManager
 from src.memory.system_prompt import generate_system_prompt
@@ -153,6 +154,15 @@ class InviteCodeResult(BaseModel):
     success: bool
     message: str
     code: Optional[str] = None
+
+
+class AdaptiveSuggestionsResult(BaseModel):
+    """Result of adaptive suggestions"""
+
+    success: bool
+    message: str
+    suggestions: list[dict]
+    reminder_name: str
 
 
 class DynamicToolCreationResult(BaseModel):
@@ -744,6 +754,86 @@ async def compare_all_reminders(ctx, period: str = "month") -> ReminderStatistic
             message=f"Error comparing reminders: {str(e)}",
             formatted_stats=None,
             analytics=None
+        )
+
+
+@agent.tool
+async def suggest_reminder_optimizations(
+    ctx,
+    reminder_description: str
+) -> AdaptiveSuggestionsResult:
+    """
+    Get personalized suggestions for improving reminder completion
+
+    Analyzes user's completion patterns and suggests optimizations like:
+    - Adjusting reminder time to match actual completion patterns
+    - Adding support for difficult days (e.g., Thursday struggles)
+    - Splitting schedule (different times for weekdays vs weekends)
+
+    Args:
+        reminder_description: Description of reminder (e.g., "vitamin D", "medication")
+
+    Returns:
+        AdaptiveSuggestionsResult with list of actionable suggestions
+    """
+    deps: AgentDeps = ctx.deps
+
+    try:
+        # Find reminder by description
+        from src.db.queries import get_active_reminders
+        from src.utils.reminder_formatters import format_adaptive_suggestions
+
+        reminders = await get_active_reminders(deps.telegram_id)
+
+        # Find matching reminder
+        matching_reminder = None
+        for reminder in reminders:
+            if reminder_description.lower() in reminder['message'].lower():
+                matching_reminder = reminder
+                break
+
+        if not matching_reminder:
+            return AdaptiveSuggestionsResult(
+                success=False,
+                message=f"Could not find a reminder matching '{reminder_description}'",
+                suggestions=[],
+                reminder_name=reminder_description
+            )
+
+        # Generate suggestions
+        suggestions = await generate_adaptive_suggestions(
+            deps.telegram_id,
+            matching_reminder['id']
+        )
+
+        if not suggestions:
+            return AdaptiveSuggestionsResult(
+                success=True,
+                message=f"✅ Your '{matching_reminder['message']}' reminder is working great! No optimizations needed right now.",
+                suggestions=[],
+                reminder_name=matching_reminder['message']
+            )
+
+        # Format suggestions for display
+        formatted_message = format_adaptive_suggestions(
+            suggestions,
+            matching_reminder['message']
+        )
+
+        return AdaptiveSuggestionsResult(
+            success=True,
+            message=formatted_message,
+            suggestions=suggestions,
+            reminder_name=matching_reminder['message']
+        )
+
+    except Exception as e:
+        logger.error(f"Error generating suggestions: {e}", exc_info=True)
+        return AdaptiveSuggestionsResult(
+            success=False,
+            message=f"Error analyzing reminder patterns: {str(e)}",
+            suggestions=[],
+            reminder_name=reminder_description
         )
 
 
@@ -1475,6 +1565,7 @@ async def get_agent_response(
         dynamic_agent.tool(get_user_reminders)
         dynamic_agent.tool(get_reminder_statistics)
         dynamic_agent.tool(compare_all_reminders)
+        dynamic_agent.tool(suggest_reminder_optimizations)
         dynamic_agent.tool(get_daily_food_summary)
         dynamic_agent.tool(remember_visual_pattern)
         dynamic_agent.tool(create_dynamic_tool)
@@ -1516,6 +1607,7 @@ async def get_agent_response(
                 fallback_agent.tool(get_user_reminders)
                 fallback_agent.tool(get_reminder_statistics)
                 fallback_agent.tool(compare_all_reminders)
+                fallback_agent.tool(suggest_reminder_optimizations)
                 fallback_agent.tool(get_daily_food_summary)
                 fallback_agent.tool(remember_visual_pattern)
                 fallback_agent.tool(create_dynamic_tool)
