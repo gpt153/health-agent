@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 from datetime import date, datetime, timedelta
 import logging
 
-from src.gamification import mock_store
+from src.db import queries
 
 logger = logging.getLogger(__name__)
 
@@ -52,16 +52,16 @@ async def check_and_award_achievements(
     """
     newly_unlocked = []
 
-    # Get all achievements
-    all_achievements = mock_store.get_all_achievements()
+    # Get all achievements from database
+    all_achievements = await queries.get_all_achievements()
 
-    # Get user's already unlocked achievements
-    user_achievements = mock_store.get_user_achievements(user_id)
+    # Get user's already unlocked achievements from database
+    user_achievements = await queries.get_user_achievements(user_id)
     unlocked_ids = {ach['achievement_id'] for ach in user_achievements if ach.get('unlocked_at')}
 
     # Map achievement IDs to keys
-    achievement_id_to_key = {ach['id']: ach['achievement_key'] for ach in all_achievements}
-    unlocked_keys = {achievement_id_to_key.get(aid) for aid in unlocked_ids if achievement_id_to_key.get(aid)}
+    achievement_id_to_key = {str(ach['id']): ach['achievement_key'] for ach in all_achievements}
+    unlocked_keys = {achievement_id_to_key.get(str(aid)) for aid in unlocked_ids if achievement_id_to_key.get(str(aid))}
 
     # Check each achievement
     for achievement in all_achievements:
@@ -114,7 +114,7 @@ async def check_and_award_achievements(
         # If unlocked, award it
         if is_unlocked:
             unlocked_data = {
-                'achievement_id': achievement['id'],
+                'achievement_id': str(achievement['id']),
                 'achievement_key': achievement_key,
                 'name': achievement['name'],
                 'description': achievement['description'],
@@ -124,8 +124,8 @@ async def check_and_award_achievements(
                 'unlocked_at': datetime.now()
             }
 
-            # Save to store
-            mock_store.unlock_user_achievement(user_id, achievement['id'])
+            # Save to database
+            await queries.unlock_user_achievement(user_id, str(achievement['id']))
 
             newly_unlocked.append(unlocked_data)
 
@@ -157,12 +157,12 @@ async def get_user_achievements(
             'total_xp_from_achievements': int
         }
     """
-    # Get user's unlocked achievements
-    user_achievements = mock_store.get_user_achievements(user_id)
+    # Get user's unlocked achievements from database
+    user_achievements = await queries.get_user_achievements(user_id)
 
-    # Get all achievements for reference
-    all_achievements = mock_store.get_all_achievements()
-    achievement_map = {ach['id']: ach for ach in all_achievements}
+    # Get all achievements for reference from database
+    all_achievements = await queries.get_all_achievements()
+    achievement_map = {str(ach['id']): ach for ach in all_achievements}
 
     # Format unlocked achievements
     unlocked = []
@@ -171,7 +171,7 @@ async def get_user_achievements(
 
     for user_ach in user_achievements:
         if user_ach.get('unlocked_at'):
-            achievement = achievement_map.get(user_ach['achievement_id'])
+            achievement = achievement_map.get(str(user_ach['achievement_id']))
             if achievement:
                 unlocked.append({
                     'achievement_key': achievement['achievement_key'],
@@ -183,7 +183,7 @@ async def get_user_achievements(
                     'xp_reward': achievement['xp_reward'],
                     'unlocked_at': user_ach['unlocked_at'],
                 })
-                unlocked_ids.add(user_ach['achievement_id'])
+                unlocked_ids.add(str(user_ach['achievement_id']))
                 total_xp += achievement['xp_reward']
 
     # Sort by unlock date (most recent first)
@@ -200,7 +200,7 @@ async def get_user_achievements(
     if include_locked:
         locked = []
         for achievement in all_achievements:
-            if achievement['id'] not in unlocked_ids:
+            if str(achievement['id']) not in unlocked_ids:
                 # Calculate progress toward this achievement
                 progress = await _calculate_achievement_progress(user_id, achievement)
 
@@ -258,8 +258,8 @@ async def _check_completion_count(user_id: str, criteria: Dict, context: Dict) -
     required_count = criteria['value']
     domain = criteria.get('domain', 'any')
 
-    # Get all XP transactions as proxy for completions
-    transactions = mock_store.get_xp_transactions(user_id)
+    # Get all XP transactions as proxy for completions from database
+    transactions = await queries.get_xp_transactions(user_id, limit=1000)
 
     if domain == 'any':
         return len(transactions) >= required_count
@@ -274,8 +274,8 @@ async def _check_streak_achievement(user_id: str, criteria: Dict, context: Dict)
     required_streak = criteria['value']
     domain = criteria.get('domain', 'any')
 
-    # Get user's streaks
-    streaks = mock_store.get_all_user_streaks(user_id)
+    # Get user's streaks from database
+    streaks = await queries.get_all_user_streaks(user_id)
 
     if domain == 'any':
         # Check if ANY streak meets the requirement
@@ -301,8 +301,8 @@ async def _check_domain_count(user_id: str, criteria: Dict, context: Dict) -> bo
     required_count = criteria['value']
     domain = criteria['domain']
 
-    # Get transactions for this domain
-    transactions = mock_store.get_xp_transactions(user_id)
+    # Get transactions for this domain from database
+    transactions = await queries.get_xp_transactions(user_id, limit=1000)
     domain_transactions = [t for t in transactions if t['source_type'] == domain]
 
     return len(domain_transactions) >= required_count
@@ -312,8 +312,8 @@ async def _check_level_milestone(user_id: str, criteria: Dict, context: Dict) ->
     """Check if user reached level milestone"""
     required_level = criteria['value']
 
-    # Get user's current level
-    xp_data = mock_store.get_user_xp_data(user_id)
+    # Get user's current level from database
+    xp_data = await queries.get_user_xp_data(user_id)
     current_level = xp_data['current_level']
 
     return current_level >= required_level
@@ -323,8 +323,8 @@ async def _check_xp_milestone(user_id: str, criteria: Dict, context: Dict) -> bo
     """Check if user reached total XP milestone"""
     required_xp = criteria['value']
 
-    # Get user's total XP
-    xp_data = mock_store.get_user_xp_data(user_id)
+    # Get user's total XP from database
+    xp_data = await queries.get_user_xp_data(user_id)
     total_xp = xp_data['total_xp']
 
     return total_xp >= required_xp
@@ -341,8 +341,8 @@ async def _check_streak_recovery(user_id: str, criteria: Dict, context: Dict) ->
     """Check if user started new streak after breaking one"""
     required_new_streak = criteria['value']
 
-    # Get all streaks
-    streaks = mock_store.get_all_user_streaks(user_id)
+    # Get all streaks from database
+    streaks = await queries.get_all_user_streaks(user_id)
 
     # Check if any streak has current > 0 and best > current (meaning they broke a streak)
     for streak in streaks:
@@ -378,7 +378,7 @@ async def _calculate_achievement_progress(user_id: str, achievement: Dict) -> Di
     required = criteria.get('value', 0)
 
     if criteria_type == 'completion_count':
-        transactions = mock_store.get_xp_transactions(user_id)
+        transactions = await queries.get_xp_transactions(user_id, limit=1000)
         domain = criteria.get('domain', 'any')
         if domain == 'any':
             current = len(transactions)
@@ -386,7 +386,7 @@ async def _calculate_achievement_progress(user_id: str, achievement: Dict) -> Di
             current = len([t for t in transactions if t['source_type'] == domain])
 
     elif criteria_type == 'streak':
-        streaks = mock_store.get_all_user_streaks(user_id)
+        streaks = await queries.get_all_user_streaks(user_id)
         domain = criteria.get('domain', 'any')
         if domain == 'any':
             current = max((s['current_streak'] for s in streaks), default=0)
@@ -395,16 +395,16 @@ async def _calculate_achievement_progress(user_id: str, achievement: Dict) -> Di
             current = max((s['current_streak'] for s in domain_streaks), default=0)
 
     elif criteria_type == 'domain_count':
-        transactions = mock_store.get_xp_transactions(user_id)
+        transactions = await queries.get_xp_transactions(user_id, limit=1000)
         domain = criteria['domain']
         current = len([t for t in transactions if t['source_type'] == domain])
 
     elif criteria_type == 'level':
-        xp_data = mock_store.get_user_xp_data(user_id)
+        xp_data = await queries.get_user_xp_data(user_id)
         current = xp_data['current_level']
 
     elif criteria_type == 'total_xp':
-        xp_data = mock_store.get_user_xp_data(user_id)
+        xp_data = await queries.get_user_xp_data(user_id)
         current = xp_data['total_xp']
 
     elif criteria_type in ['perfect_period', 'recovery', 'streak_recovery', 'sustained_effort']:

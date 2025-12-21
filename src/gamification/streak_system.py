@@ -21,7 +21,7 @@ from typing import Dict, List, Optional
 from datetime import date, datetime, timedelta
 import logging
 
-from src.gamification import mock_store
+from src.db import queries
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +60,8 @@ async def update_streak(
     if activity_date is None:
         activity_date = date.today()
 
-    # Get current streak data
-    streak = mock_store.get_user_streak(user_id, streak_type, source_id)
+    # Get current streak data from database
+    streak = await queries.get_user_streak(user_id, streak_type, source_id)
 
     old_current = streak["current_streak"]
     old_best = streak["best_streak"]
@@ -133,8 +133,8 @@ async def update_streak(
             message += f"\n🏆 {milestone}-day milestone reached! +{bonus} XP"
             break
 
-    # Save updated streak
-    mock_store.update_user_streak(user_id, streak_type, streak, source_id)
+    # Save updated streak to database
+    await queries.update_user_streak(user_id, streak_type, streak, source_id)
 
     logger.info(
         f"Updated {streak_type} streak for user {user_id}: "
@@ -160,7 +160,7 @@ async def get_user_streaks(user_id: str) -> List[Dict[str, any]]:
     Returns:
         List of streaks with current counts and metadata
     """
-    streaks = mock_store.get_all_user_streaks(user_id)
+    streaks = await queries.get_all_user_streaks(user_id)
 
     # Format for display
     formatted = []
@@ -195,7 +195,7 @@ async def use_streak_freeze(
             'message': str
         }
     """
-    streak = mock_store.get_user_streak(user_id, streak_type, source_id)
+    streak = await queries.get_user_streak(user_id, streak_type, source_id)
 
     if streak["freeze_days_remaining"] <= 0:
         return {
@@ -205,7 +205,7 @@ async def use_streak_freeze(
         }
 
     streak["freeze_days_remaining"] -= 1
-    mock_store.update_user_streak(user_id, streak_type, streak, source_id)
+    await queries.update_user_streak(user_id, streak_type, streak, source_id)
 
     return {
         "success": True,
@@ -220,11 +220,11 @@ async def reset_monthly_freeze_days(user_id: str) -> None:
 
     Each user gets 2 freeze days per month
     """
-    streaks = mock_store.get_all_user_streaks(user_id)
+    streaks = await queries.get_all_user_streaks(user_id)
 
     for streak in streaks:
         streak["freeze_days_remaining"] = 2
-        mock_store.update_user_streak(
+        await queries.update_user_streak(
             user_id,
             streak["streak_type"],
             streak,

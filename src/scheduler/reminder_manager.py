@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, ContextTypes
 from src.db.queries import get_active_reminders, get_tracking_categories
+from src.utils.datetime_helpers import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -216,10 +217,9 @@ class ReminderManager:
 
         try:
             from src.i18n.translations import t
-            from datetime import datetime
 
-            # Store scheduled time for pattern tracking
-            scheduled_time = datetime.now().replace(
+            # Store scheduled time for pattern tracking (in UTC)
+            scheduled_time = now_utc().replace(
                 hour=int(scheduled_time_str.split(':')[0]),
                 minute=int(scheduled_time_str.split(':')[1]),
                 second=0,

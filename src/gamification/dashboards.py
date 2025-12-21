@@ -12,7 +12,8 @@ from typing import Dict, List, Optional
 from src.gamification import get_user_xp
 from src.gamification.streak_system import get_user_streaks, format_streak_display
 from src.gamification.achievement_system import get_user_achievements, format_achievement_display
-from src.gamification import mock_store
+from src.gamification.xp_system import get_xp_history
+from src.db import queries
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ async def get_daily_snapshot(user_id: str) -> str:
         xp_data = await get_user_xp(user_id)
 
         # Get today's XP transactions
-        all_transactions = mock_store.get_xp_transactions(user_id, limit=100)
+        all_transactions = await queries.get_xp_transactions(user_id, limit=100)
         today_transactions = [
             tx for tx in all_transactions
             if tx['awarded_at'].date() == today

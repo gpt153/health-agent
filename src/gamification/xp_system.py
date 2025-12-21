@@ -20,10 +20,10 @@ XP Award Rules:
 """
 
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 
-from src.gamification import mock_store
+from src.db import queries
 
 logger = logging.getLogger(__name__)
 
@@ -122,8 +122,8 @@ async def award_xp(
             'unlocked_features': list
         }
     """
-    # Get current XP data
-    xp_data = mock_store.get_user_xp_data(user_id)
+    # Get current XP data from database
+    xp_data = await queries.get_user_xp_data(user_id)
     old_level = xp_data["current_level"]
     old_tier = xp_data["level_tier"]
     old_total_xp = xp_data["total_xp"]
@@ -139,17 +139,17 @@ async def award_xp(
     leveled_up = new_level > old_level
     tier_changed = new_tier != old_tier
 
-    # Update user XP
-    xp_data.update({
+    # Update user XP in database
+    updated_xp_data = {
         "total_xp": new_total_xp,
         "current_level": new_level,
         "xp_to_next_level": level_info["xp_to_next_level"],
         "level_tier": new_tier,
-    })
-    mock_store.update_user_xp(user_id, xp_data)
+    }
+    await queries.update_user_xp(user_id, updated_xp_data)
 
-    # Log transaction
-    mock_store.add_xp_transaction(user_id, amount, source_type, source_id, reason)
+    # Log transaction to database
+    await queries.add_xp_transaction(user_id, amount, source_type, source_id, reason)
 
     # Determine unlocked features (if tier changed)
     unlocked_features = []
@@ -200,7 +200,7 @@ async def get_user_xp(user_id: str) -> Dict[str, any]:
             'xp_in_current_level': int
         }
     """
-    xp_data = mock_store.get_user_xp_data(user_id)
+    xp_data = await queries.get_user_xp_data(user_id)
     level_info = calculate_level_from_xp(xp_data["total_xp"])
 
     return {
@@ -224,10 +224,9 @@ async def get_xp_history(user_id: str, days: int = 7) -> List[Dict[str, any]]:
     Returns:
         List of XP transactions sorted by date (newest first)
     """
-    transactions = mock_store.get_xp_transactions(user_id, limit=50)
+    transactions = await queries.get_xp_transactions(user_id, limit=50)
 
-    # Filter by days (simple approach for now)
-    from datetime import datetime, timedelta
+    # Filter by days
     cutoff_date = datetime.now() - timedelta(days=days)
     filtered = [t for t in transactions if t["awarded_at"] >= cutoff_date]
 

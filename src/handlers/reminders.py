@@ -1,12 +1,13 @@
 """Reminder completion handlers"""
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CallbackQueryHandler, ContextTypes
 from src.db.queries import save_reminder_completion, get_reminder_by_id
 from src.utils.auth import is_authorized
 from src.utils.note_templates import get_note_templates
 from src.gamification.integrations import handle_reminder_completion_gamification
+from src.utils.datetime_helpers import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +47,8 @@ async def handle_reminder_completion(update: Update, context: ContextTypes.DEFAU
         reminder_id = parts[1]
         scheduled_time = parts[2]
 
-        # Get actual completion time (now)
-        completed_at = datetime.now()
+        # Get actual completion time (now in UTC for DB storage)
+        completed_at = now_utc()
 
         # Save completion to database
         await save_reminder_completion(
@@ -320,9 +321,8 @@ async def handle_reminder_snooze(update: Update, context: ContextTypes.DEFAULT_T
 
         message = reminder_data.get('message', '')
 
-        # Schedule snooze job (30 minutes from now)
-        from datetime import timedelta
-        snooze_time = datetime.now() + timedelta(minutes=30)
+        # Schedule snooze job (30 minutes from now in UTC)
+        snooze_time = now_utc() + timedelta(minutes=30)
 
         # Use JobQueue to schedule one-time reminder
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
