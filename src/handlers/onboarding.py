@@ -1,7 +1,7 @@
 """Onboarding handlers for dual-path progressive onboarding"""
 import logging
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
-from telegram.ext import ContextTypes
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import ContextTypes, CallbackQueryHandler
 
 from src.db.queries import (
     get_onboarding_state,
@@ -44,58 +44,57 @@ async def handle_onboarding_start(update: Update, context: ContextTypes.DEFAULT_
         "**How should we start?**"
     )
 
-    # Create keyboard with three options (with time estimates)
+    # Create inline keyboard with three options (with time estimates)
     keyboard = [
-        ["Quick Start 🚀 (30 sec)"],
-        ["Show Me Around 🎬 (2 min)"],
-        ["Just Chat 💬 (start now)"]
+        [InlineKeyboardButton("Quick Start 🚀 (30 sec)", callback_data="onboard_quick")],
+        [InlineKeyboardButton("Show Me Around 🎬 (2 min)", callback_data="onboard_full")],
+        [InlineKeyboardButton("Just Chat 💬 (start now)", callback_data="onboard_chat")]
     ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(message, reply_markup=reply_markup)
 
-    # Initialize onboarding state
-    await start_onboarding(user_id, "pending")  # Will be set when user picks path
+    # Initialize onboarding state (don't set path yet, wait for button click)
+    await start_onboarding(user_id, "pending")
 
     logger.info(f"Showed path selection to user {user_id}")
 
 
-async def handle_path_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_path_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handle user's path selection (Quick Start, Full Tour, Just Chat)
+    Handle user's path selection via inline button callback
+    Callback data: "onboard_quick", "onboard_full", or "onboard_chat"
     """
-    user_id = str(update.effective_user.id)
-    text = update.message.text.lower()
+    query = update.callback_query
+    await query.answer()  # Acknowledge the callback
 
-    # Determine selected path
-    if "quick" in text or "🚀" in text:
+    user_id = str(update.effective_user.id)
+    callback_data = query.data
+
+    # Determine path from callback data
+    if callback_data == "onboard_quick":
         path = "quick"
-    elif "show" in text or "tour" in text or "around" in text or "🎬" in text:
+    elif callback_data == "onboard_full":
         path = "full"
-    elif "chat" in text or "💬" in text:
+    elif callback_data == "onboard_chat":
         path = "chat"
     else:
-        # Invalid selection, show options again
-        await update.message.reply_text(
-            "Please choose one of the three options:",
-            reply_markup=ReplyKeyboardMarkup(
-                [["Quick Start 🚀 (30 sec)"], ["Show Me Around 🎬 (2 min)"], ["Just Chat 💬 (start now)"]],
-                one_time_keyboard=True,
-                resize_keyboard=True
-            )
-        )
+        logger.warning(f"Unknown callback data in path selection: {callback_data}")
         return
 
     # Update state with selected path
     await start_onboarding(user_id, path)
 
+    # Edit the message to remove buttons (provides visual feedback)
+    await query.edit_message_reply_markup(reply_markup=None)
+
     # Route to appropriate first step
     if path == "quick":
-        await quick_start_timezone(update, context)
+        await quick_start_timezone_callback(update, context)
     elif path == "full":
-        await full_tour_timezone(update, context)
+        await full_tour_timezone_callback(update, context)
     elif path == "chat":
-        await just_chat_start(update, context)
+        await just_chat_start_callback(update, context)
 
     logger.info(f"User {user_id} selected path: {path}")
 
@@ -118,6 +117,35 @@ TIMEZONE_LANGUAGE_MAP = {
     'Asia/Shanghai': ('zh', '您希望我们从现在开始说中文吗？', '🇨🇳'),
     'Asia/Seoul': ('ko', '지금부터 한국어로 대화하시겠습니까?', '🇰🇷'),
 }
+
+
+async def ask_language_preference_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, timezone: str) -> None:
+    """Ask if user wants to use their local language based on timezone (callback version)"""
+    query = update.callback_query
+    user_id = str(update.effective_user.id)
+    state = await get_onboarding_state(user_id)
+    path = state.get('onboarding_path')
+
+    # Check if timezone maps to a non-English language
+    if timezone in TIMEZONE_LANGUAGE_MAP:
+        lang_code, question, flag = TIMEZONE_LANGUAGE_MAP[timezone]
+
+        keyboard = [
+            [InlineKeyboardButton(f"Yes / Ja {flag}", callback_data="lang_native")],
+            [InlineKeyboardButton("No, English is fine 🇬🇧", callback_data="lang_english")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        message = f"{flag} {question}\n\n(I can speak {lang_code.upper()} or continue in English)"
+
+        await query.message.reply_text(message, reply_markup=reply_markup)
+        await update_onboarding_step(user_id, "language_selection", mark_complete="timezone_setup")
+    else:
+        # English timezone, skip language question
+        if path == "quick":
+            await quick_start_focus_selection_callback(update, context)
+        elif path == "full":
+            await full_tour_profile_setup_callback(update, context)
 
 
 async def ask_language_preference(update: Update, context: ContextTypes.DEFAULT_TYPE, timezone: str) -> None:
@@ -148,6 +176,38 @@ async def ask_language_preference(update: Update, context: ContextTypes.DEFAULT_
             await full_tour_profile_setup(update, context)
 
 
+async def quick_start_timezone_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Quick Start Step 1: Set timezone (callback version)"""
+    query = update.callback_query
+    user_id = str(update.effective_user.id)
+
+    # Check if user already has timezone
+    from src.utils.timezone_helper import get_timezone_from_profile
+    existing_tz = get_timezone_from_profile(user_id)
+
+    if existing_tz:
+        # Already has timezone, go to language question
+        # Create a pseudo-update with message for compatibility
+        await ask_language_preference_callback(update, context, existing_tz)
+        return
+
+    # Show timezone setup
+    message = (
+        "🌍 What's your timezone?\n\n"
+        "Two ways to set it:\n"
+        "📍 Share your location (tap 📎 → Location)\n"
+        "⌨️ Or type it: 'America/New_York', 'Europe/London', etc.\n\n"
+        "Why? So reminders hit at the right time!"
+    )
+
+    # Create keyboard with location button (must use ReplyKeyboard for location request)
+    keyboard = [[KeyboardButton("📍 Share Location", request_location=True)]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+
+    await query.message.reply_text(message, reply_markup=reply_markup)
+    await update_onboarding_step(user_id, "timezone_setup")
+
+
 async def quick_start_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Quick Start Step 1: Set timezone"""
     user_id = str(update.effective_user.id)
@@ -176,6 +236,45 @@ async def quick_start_timezone(update: Update, context: ContextTypes.DEFAULT_TYP
 
     await update.message.reply_text(message, reply_markup=reply_markup)
     await update_onboarding_step(user_id, "timezone_setup")
+
+
+async def quick_start_focus_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Quick Start Step 2: Pick main focus (callback version)"""
+    query = update.callback_query
+    user_id = str(update.effective_user.id)
+
+    message = (
+        "🎯 **What's your main goal right now?**\n\n"
+        "Pick what matters most to you:"
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("🍽️ Track nutrition", callback_data="focus_nutrition")],
+        [InlineKeyboardButton("💪 Build workout habit", callback_data="focus_workout")],
+        [InlineKeyboardButton("😴 Improve sleep", callback_data="focus_sleep")],
+        [InlineKeyboardButton("🏃 General health coaching", callback_data="focus_general")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.message.reply_text(message, reply_markup=reply_markup)
+    await update_onboarding_step(user_id, "focus_selection", mark_complete="timezone_setup")
+
+
+async def full_tour_profile_setup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Full Tour Step 2: Collect profile information (callback version)"""
+    query = update.callback_query
+    user_id = str(update.effective_user.id)
+
+    message = (
+        "👤 **Tell me about yourself** (optional, but helps me personalize):\n\n"
+        "• What's your name?\n"
+        "• Your age?\n"
+        "• Current goal? (lose weight, build muscle, maintain health)\n\n"
+        "You can skip any question - just say \"skip\" or \"next\""
+    )
+
+    await query.message.reply_text(message, reply_markup=ReplyKeyboardRemove())
+    await update_onboarding_step(user_id, "profile_setup", mark_complete="timezone_setup")
 
 
 async def quick_start_focus_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -442,6 +541,29 @@ async def full_tour_complete(update: Update, context: ContextTypes.DEFAULT_TYPE)
     logger.info(f"User {user_id} completed Full Tour onboarding")
 
 
+async def just_chat_start_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Just Chat: Start organic discovery mode (callback version)"""
+    query = update.callback_query
+    user_id = str(update.effective_user.id)
+
+    message = (
+        "💬 **Perfect! I learn best through conversation anyway.**\n\n"
+        "Tell me what brings you here - a goal, a question, "
+        "or just 'I want to get healthier' works too.\n\n"
+        "I'll introduce features naturally as you need them."
+    )
+
+    await query.message.reply_text(message, reply_markup=ReplyKeyboardRemove())
+    await complete_onboarding(user_id)  # Mark as complete, but discovery is ongoing
+
+    logger.info(f"User {user_id} selected Just Chat path")
+
+
+async def full_tour_timezone_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Full Tour Step 1: Set timezone (callback version, same as quick start)"""
+    await quick_start_timezone_callback(update, context)
+
+
 async def just_chat_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Just Chat: Start organic discovery mode"""
     user_id = str(update.effective_user.id)
@@ -586,3 +708,12 @@ async def handle_onboarding_message(update: Update, context: ContextTypes.DEFAUL
         await full_tour_complete(update, context)
 
     # Add more step handlers as needed
+
+
+# Callback Query Handlers for Inline Buttons
+# These are registered in bot.py to handle button clicks
+
+onboarding_path_selection_handler = CallbackQueryHandler(
+    handle_path_selection_callback,
+    pattern="^onboard_(quick|full|chat)$"
+)

@@ -27,7 +27,7 @@ from src.utils.vision import analyze_food_photo
 from src.utils.voice import transcribe_voice
 from src.models.food import FoodEntry
 from src.scheduler.reminder_manager import ReminderManager
-from src.handlers.onboarding import handle_onboarding_start, handle_onboarding_message
+from src.handlers.onboarding import handle_onboarding_start, handle_onboarding_message, onboarding_path_selection_handler
 from src.handlers.sleep_quiz import sleep_quiz_handler
 from src.handlers.sleep_settings import sleep_settings_handler
 from src.handlers.reminders import (
@@ -285,6 +285,45 @@ Don't have a code? Contact the admin to request one."""
 Send me a food photo, ask me anything, or type /help for commands!"""
 
         await update.message.reply_text(welcome_message)
+
+
+async def onboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /onboard command - restart or resume onboarding"""
+    user_id = str(update.effective_user.id)
+
+    # Check topic filter
+    if not should_process_message(update):
+        return
+
+    # Check if user is authorized
+    if not await is_authorized(user_id):
+        await update.message.reply_text(
+            "⚠️ Please activate your account first using /start"
+        )
+        return
+
+    # Reset onboarding state to start fresh
+    from src.db.queries import get_onboarding_state
+    onboarding = await get_onboarding_state(user_id)
+
+    if onboarding:
+        # Clear existing onboarding state
+        from src.db.queries import db
+        async with db.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "DELETE FROM user_onboarding_state WHERE user_id = %s",
+                    (user_id,)
+                )
+                await conn.commit()
+        logger.info(f"Cleared onboarding state for user {user_id}")
+
+    # Start fresh onboarding
+    await update.message.reply_text(
+        "🔄 **Restarting onboarding...**\n\n"
+        "Let's go through the setup again!"
+    )
+    await handle_onboarding_start(update, context)
 
 
 async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1147,6 +1186,7 @@ def create_bot_application() -> Application:
 
     # Add command handlers
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("onboard", onboard))
     app.add_handler(CommandHandler("activate", activate))
     app.add_handler(CommandHandler("transparency", transparency))
     app.add_handler(CommandHandler("settings", settings_command))
@@ -1176,6 +1216,10 @@ def create_bot_application() -> Application:
     app.add_handler(note_custom_handler)
     app.add_handler(note_skip_handler)
     logger.info("Note handlers registered (add_note, template, custom, skip)")
+
+    # Add onboarding callback handlers
+    app.add_handler(onboarding_path_selection_handler)
+    logger.info("Onboarding callback handlers registered (path_selection)")
 
     # Add message handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
