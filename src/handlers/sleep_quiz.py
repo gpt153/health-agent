@@ -10,6 +10,7 @@ from src.models.sleep import SleepEntry
 from src.utils.auth import is_authorized
 from src.i18n.translations import t, get_user_language
 from src.gamification.integrations import handle_sleep_quiz_gamification
+from src.utils.datetime_helpers import now_utc, to_utc
 from datetime import datetime, time as time_type
 from uuid import uuid4
 
@@ -528,7 +529,7 @@ async def handle_alertness_callback(update: Update, context: ContextTypes.DEFAUL
         entry = SleepEntry(
             id=str(uuid4()),
             user_id=user_id,
-            logged_at=datetime.now(),
+            logged_at=now_utc(),  # Store in UTC
             bedtime=time_type(bed_hour, bed_min),
             sleep_latency_minutes=latency,
             wake_time=time_type(wake_hour, wake_min),
@@ -564,7 +565,7 @@ async def handle_alertness_callback(update: Update, context: ContextTypes.DEFAUL
                 from src.db.queries import save_sleep_quiz_submission
                 from src.models.sleep_settings import SleepQuizSubmission
 
-                submitted_at = datetime.now()
+                submitted_at = now_utc()  # Store in UTC
                 delay = int((submitted_at - scheduled_time).total_seconds() / 60)
 
                 # Save submission pattern
