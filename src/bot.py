@@ -932,9 +932,107 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             visual_patterns=visual_patterns
         )
 
-        # Verify nutrition data with USDA database
+        # Phase 1: Multi-layer verification
         from src.utils.nutrition_search import verify_food_items
-        verified_foods = await verify_food_items(analysis.foods)
+        from src.utils.nutrition_validation import batch_validate_food_items, validate_nutrition_estimate
+        from src.utils.estimate_comparison import compare_estimates
+
+        # Get USDA-verified estimates
+        usda_verified_foods = await verify_food_items(analysis.foods)
+
+        # Validate each food item and create comparison
+        final_foods = []
+        validation_warnings = []
+
+        for i, food in enumerate(analysis.foods):
+            # Get USDA version if available
+            usda_food = usda_verified_foods[i] if i < len(usda_verified_foods) else food
+
+            # Validate the vision AI estimate
+            validation = validate_nutrition_estimate(
+                food_name=food.name,
+                quantity=food.quantity,
+                calories=food.calories,
+                protein=food.macros.protein,
+                carbs=food.macros.carbs,
+                fat=food.macros.fat
+            )
+
+            # Prepare estimates for comparison
+            estimates = [
+                {
+                    "source": "vision_ai",
+                    "calories": food.calories,
+                    "macros": {
+                        "protein": food.macros.protein,
+                        "carbs": food.macros.carbs,
+                        "fat": food.macros.fat
+                    }
+                }
+            ]
+
+            # Add USDA if different from AI
+            if usda_food.verification_source == "usda":
+                estimates.append({
+                    "source": "usda",
+                    "calories": usda_food.calories,
+                    "macros": {
+                        "protein": usda_food.macros.protein,
+                        "carbs": usda_food.macros.carbs,
+                        "fat": usda_food.macros.fat
+                    }
+                })
+
+            # Add validation suggestion if flagged
+            if not validation["is_valid"] and validation["suggested_calories"]:
+                estimates.append({
+                    "source": "validation",
+                    "calories": validation["suggested_calories"],
+                    "macros": {
+                        "protein": food.macros.protein,  # Keep original macros for now
+                        "carbs": food.macros.carbs,
+                        "fat": food.macros.fat
+                    }
+                })
+
+            # Compare estimates
+            comparison = compare_estimates(estimates)
+
+            # Use consensus if we have multiple sources
+            if len(estimates) > 1:
+                # Use USDA if available and validation passed, otherwise use consensus
+                if usda_food.verification_source == "usda" and validation["confidence"] > 0.6:
+                    final_food = usda_food
+                    final_food.confidence_score = min(comparison["confidence"], validation["confidence"])
+                else:
+                    # Use consensus from comparison
+                    from src.models.food import FoodItem, FoodMacros
+                    final_food = FoodItem(
+                        name=food.name,
+                        quantity=food.quantity,
+                        calories=comparison["consensus"],
+                        macros=usda_food.macros if usda_food.verification_source == "usda" else food.macros,
+                        verification_source="multi_agent" if comparison["requires_debate"] else "verified",
+                        confidence_score=comparison["confidence"]
+                    )
+
+                # Add warning if high variance detected
+                if comparison["requires_debate"]:
+                    warning = (
+                        f"⚠️ {food.name}: High variance detected "
+                        f"(AI: {food.calories} vs USDA: {usda_food.calories if usda_food.verification_source == 'usda' else 'N/A'}). "
+                        f"Using consensus: {comparison['consensus']} kcal"
+                    )
+                    validation_warnings.append(warning)
+                    logger.warning(f"High variance for {food.name}: {comparison['variance']:.1%}")
+            else:
+                # Single source, use USDA if available, otherwise AI
+                final_food = usda_food
+
+            final_foods.append(final_food)
+
+        # Use final_foods instead of verified_foods
+        verified_foods = final_foods
 
         # Build response message
         response_lines = ["🍽️ **Food Analysis:**"]
@@ -973,6 +1071,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         total_fat = sum(f.macros.fat for f in verified_foods)
 
         response_lines.append(f"\n**Total:** {total_calories} cal | P: {total_protein}g | C: {total_carbs}g | F: {total_fat}g")
+
+        # Add validation warnings if any
+        if validation_warnings:
+            response_lines.append("\n**Validation Notes:**")
+            for warning in validation_warnings:
+                response_lines.append(warning)
+
         response_lines.append(f"\n_Confidence: {analysis.confidence}_")
 
         # Add clarifying questions if any
