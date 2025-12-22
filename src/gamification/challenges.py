@@ -637,32 +637,3 @@ def _init_mock_challenge_storage():
     """Initialize mock storage for challenges"""
     if not hasattr(mock_store, '_user_challenges'):
         mock_store._user_challenges = {}
-
-
-def save_user_challenge_to_store(user_challenge: UserChallenge):
-    """Save user challenge to mock store"""
-    _init_mock_challenge_storage()
-    key = f"{user_challenge.user_id}_{user_challenge.challenge_id}"
-    mock_store._user_challenges[key] = user_challenge
-
-
-def get_user_challenge_from_store(user_id: str, challenge_id: str) -> Optional[UserChallenge]:
-    """Get user challenge from mock store"""
-    _init_mock_challenge_storage()
-    key = f"{user_id}_{challenge_id}"
-    return mock_store._user_challenges.get(key)
-
-
-def get_all_user_challenges_from_store(user_id: str) -> List[UserChallenge]:
-    """Get all user challenges from mock store"""
-    _init_mock_challenge_storage()
-    return [
-        uc for uc in mock_store._user_challenges.values()
-        if uc.user_id == user_id
-    ]
-
-
-# Attach to mock_store
-mock_store.save_user_challenge = save_user_challenge_to_store
-mock_store.get_user_challenge = get_user_challenge_from_store
-mock_store.get_all_user_challenges = get_all_user_challenges_from_store
