@@ -18,6 +18,8 @@ anthropic>=0.40.0
 python-dotenv>=1.0.0
 pillow>=10.0.0  # Image processing
 httpx>=0.27.0  # Async HTTP client for USDA API
+timezonefinder>=6.0.0  # Timezone detection from coordinates
+pytz>=2024.1  # Timezone handling
 
 # Development
 pytest>=8.0.0
