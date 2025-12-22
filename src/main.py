@@ -1,6 +1,7 @@
-"""Main entry point for the health agent bot"""
+"""Main entry point for the health agent bot and API"""
 import logging
 import asyncio
+import os
 from src.config import validate_config, LOG_LEVEL
 from src.db.connection import db
 from src.bot import create_bot_application
@@ -15,24 +16,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def main() -> None:
-    """Main application entry point"""
+async def run_telegram_bot() -> None:
+    """Run Telegram bot"""
     app = None
     try:
-        # Validate configuration
-        logger.info("Validating configuration...")
-        validate_config()
-
-        # Initialize database
-        logger.info("Initializing database connection pool...")
-        await db.init_pool()
-
-        # Load dynamic tools from database
-        logger.info("Loading dynamic tools...")
-        loaded_tools = await tool_manager.load_all_tools()
-        logger.info(f"Loaded {len(loaded_tools)} dynamic tools: {', '.join(loaded_tools) if loaded_tools else 'none'}")
-
-        # Create and start bot
         logger.info("Starting Telegram bot...")
         app = create_bot_application()
 
@@ -56,10 +43,6 @@ async def main() -> None:
         # Keep running until interrupted
         await asyncio.Event().wait()
 
-    except KeyboardInterrupt:
-        logger.info("Shutting down...")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}", exc_info=True)
     finally:
         # Cleanup
         if app:
@@ -67,9 +50,83 @@ async def main() -> None:
             await app.stop()
             await app.shutdown()
 
+
+async def run_api_server() -> None:
+    """Run REST API server"""
+    import uvicorn
+    from src.api.server import create_api_application
+
+    # Get API configuration from environment
+    api_host = os.getenv("API_HOST", "0.0.0.0")
+    api_port = int(os.getenv("API_PORT", "8080"))
+
+    logger.info(f"Starting API server on {api_host}:{api_port}...")
+
+    # Create FastAPI app
+    app = create_api_application()
+
+    # Configure uvicorn
+    config = uvicorn.Config(
+        app,
+        host=api_host,
+        port=api_port,
+        log_level=LOG_LEVEL.lower()
+    )
+
+    server = uvicorn.Server(config)
+
+    try:
+        await server.serve()
+    finally:
+        logger.info("API server stopped")
+
+
+async def main() -> None:
+    """Main application entry point"""
+    try:
+        # Validate configuration
+        logger.info("Validating configuration...")
+        validate_config()
+
+        # Initialize database
+        logger.info("Initializing database connection pool...")
+        await db.init_pool()
+
+        # Load dynamic tools from database
+        logger.info("Loading dynamic tools...")
+        loaded_tools = await tool_manager.load_all_tools()
+        logger.info(f"Loaded {len(loaded_tools)} dynamic tools: {', '.join(loaded_tools) if loaded_tools else 'none'}")
+
+        # Determine run mode from environment
+        run_mode = os.getenv("RUN_MODE", "bot").lower()
+
+        if run_mode == "both":
+            # Run both bot and API in parallel
+            logger.info("Running in BOTH mode (Telegram bot + API server)")
+            await asyncio.gather(
+                run_telegram_bot(),
+                run_api_server()
+            )
+        elif run_mode == "api":
+            # Run only API server
+            logger.info("Running in API mode (REST API only)")
+            await run_api_server()
+        elif run_mode == "bot":
+            # Run only Telegram bot (default)
+            logger.info("Running in BOT mode (Telegram bot only)")
+            await run_telegram_bot()
+        else:
+            logger.error(f"Invalid RUN_MODE: {run_mode}. Must be 'bot', 'api', or 'both'")
+            raise ValueError(f"Invalid RUN_MODE: {run_mode}")
+
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+        raise
+    finally:
         logger.info("Closing database connection...")
         await db.close_pool()
-
         logger.info("Shutdown complete")
 
 
