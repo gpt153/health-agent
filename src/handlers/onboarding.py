@@ -60,6 +60,26 @@ async def handle_onboarding_start(update: Update, context: ContextTypes.DEFAULT_
     logger.info(f"Showed path selection to user {user_id}")
 
 
+async def handle_path_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    DEPRECATED: Handle path selection via text message (fallback for old flow)
+
+    This function is kept for backwards compatibility but path selection
+    should now be done via inline buttons (handle_path_selection_callback).
+
+    If a user somehow ends up here (shouldn't happen with new flow),
+    redirect them to use the buttons.
+    """
+    user_id = str(update.effective_user.id)
+
+    await update.message.reply_text(
+        "👆 Please select an option using the buttons above.\n\n"
+        "If you don't see buttons, try sending /start again."
+    )
+
+    logger.warning(f"User {user_id} reached deprecated handle_path_selection - should use inline buttons")
+
+
 async def handle_path_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handle user's path selection via inline button callback
