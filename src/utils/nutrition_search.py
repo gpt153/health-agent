@@ -48,8 +48,11 @@ def parse_quantity(quantity_str: str) -> Tuple[float, str]:
     """
     Parse quantity string to extract amount and unit.
 
+    Enhanced to handle size descriptors (small, medium, large) and
+    more natural language patterns.
+
     Args:
-        quantity_str: Quantity string like "100g", "1 cup", "2 eggs"
+        quantity_str: Quantity string like "100g", "1 cup", "small", "2 eggs"
 
     Returns:
         Tuple of (amount, unit)
@@ -57,28 +60,51 @@ def parse_quantity(quantity_str: str) -> Tuple[float, str]:
     # Remove leading/trailing whitespace
     quantity_str = quantity_str.strip().lower()
 
-    # Common patterns
+    # Size descriptors -> approximate gram equivalents
+    size_mappings = {
+        'small': (80, 'g'),
+        'medium': (150, 'g'),
+        'large': (250, 'g'),
+        'extra large': (350, 'g'),
+        'xl': (350, 'g'),
+    }
+
+    # Check for size descriptors first
+    for size, (grams, unit) in size_mappings.items():
+        if size in quantity_str:
+            logger.debug(f"Parsed size descriptor '{quantity_str}' -> {grams} {unit}")
+            return grams, unit
+
+    # Common patterns (with more flexible matching)
     patterns = [
-        (r'^(\d+(?:\.\d+)?)\s*g(?:rams?)?$', 'g'),  # "100g", "100 grams"
-        (r'^(\d+(?:\.\d+)?)\s*oz$', 'oz'),  # "4oz"
-        (r'^(\d+(?:\.\d+)?)\s*lb$', 'lb'),  # "1lb"
-        (r'^(\d+(?:\.\d+)?)\s*kg$', 'kg'),  # "0.5kg"
-        (r'^(\d+(?:\.\d+)?)\s*cup(?:s)?$', 'cup'),  # "1 cup"
-        (r'^(\d+(?:\.\d+)?)\s*tbsp$', 'tbsp'),  # "2 tbsp"
-        (r'^(\d+(?:\.\d+)?)\s*tsp$', 'tsp'),  # "1 tsp"
-        (r'^(\d+(?:\.\d+)?)\s*ml$', 'ml'),  # "250ml"
-        (r'^(\d+(?:\.\d+)?)\s*(?:piece|pieces|item|items|egg|eggs|apple|apples)$', 'item'),  # "2 eggs"
+        (r'(\d+(?:\.\d+)?)\s*g(?:rams?)?(?:\s|$)', 'g'),  # "100g", "100 grams"
+        (r'(\d+(?:\.\d+)?)\s*oz(?:unce)?(?:s)?(?:\s|$)', 'oz'),  # "4oz", "4 ounces"
+        (r'(\d+(?:\.\d+)?)\s*lb(?:s)?(?:\s|$)', 'lb'),  # "1lb", "1 lbs"
+        (r'(\d+(?:\.\d+)?)\s*kg(?:\s|$)', 'kg'),  # "0.5kg"
+        (r'(\d+(?:\.\d+)?)\s*cup(?:s)?(?:\s|$)', 'cup'),  # "1 cup", "2 cups"
+        (r'(\d+(?:\.\d+)?)\s*tbsp(?:s)?(?:\s|$)', 'tbsp'),  # "2 tbsp"
+        (r'(\d+(?:\.\d+)?)\s*tsp(?:s)?(?:\s|$)', 'tsp'),  # "1 tsp"
+        (r'(\d+(?:\.\d+)?)\s*ml(?:\s|$)', 'ml'),  # "250ml"
+        (r'(\d+(?:\.\d+)?)\s*(?:piece|pieces|item|items|serving|servings)(?:\s|$)', 'item'),  # "2 pieces"
+        (r'(\d+(?:\.\d+)?)\s*(?:egg|eggs)(?:\s|$)', 'item'),  # "2 eggs"
     ]
 
     for pattern, unit in patterns:
-        match = re.match(pattern, quantity_str)
+        match = re.search(pattern, quantity_str)
         if match:
             amount = float(match.group(1))
             logger.debug(f"Parsed '{quantity_str}' -> {amount} {unit}")
             return amount, unit
 
+    # Try to extract just a number
+    number_match = re.search(r'(\d+(?:\.\d+)?)', quantity_str)
+    if number_match:
+        amount = float(number_match.group(1))
+        logger.debug(f"Extracted number from '{quantity_str}' -> {amount} g (assumed)")
+        return amount, 'g'
+
     # Default fallback
-    logger.debug(f"Could not parse '{quantity_str}', using default 100g")
+    logger.warning(f"Could not parse '{quantity_str}', using default 100g")
     return 100.0, 'g'
 
 
