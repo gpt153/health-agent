@@ -713,7 +713,121 @@ async def handle_onboarding_message(update: Update, context: ContextTypes.DEFAUL
 # Callback Query Handlers for Inline Buttons
 # These are registered in bot.py to handle button clicks
 
+async def handle_language_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle language preference button callback"""
+    query = update.callback_query
+    await query.answer()
+
+    user_id = str(update.effective_user.id)
+    callback_data = query.data
+
+    state = await get_onboarding_state(user_id)
+    path = state.get('onboarding_path') if state else None
+
+    # Edit message to remove buttons
+    await query.edit_message_reply_markup(reply_markup=None)
+
+    if callback_data == "lang_native":
+        language = "native"
+        await query.message.reply_text("👍 Perfect! (Note: Full multilingual support coming soon - for now I'll use English)")
+    else:  # lang_english
+        language = "en"
+        await query.message.reply_text("👍 Alright, we'll continue in English!")
+
+    # Save language preference in step_data
+    step_data = state.get('step_data', {}) if state else {}
+    step_data['language'] = language
+    await update_onboarding_step(user_id, None, step_data=step_data, mark_complete="language_selection")
+
+    # Route to next step based on path
+    if path == "quick":
+        await quick_start_focus_selection_callback(update, context)
+    elif path == "full":
+        await full_tour_profile_setup_callback(update, context)
+
+    logger.info(f"User {user_id} selected language: {language}")
+
+
+async def handle_focus_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle focus selection button callback"""
+    query = update.callback_query
+    await query.answer()
+
+    user_id = str(update.effective_user.id)
+    callback_data = query.data
+
+    # Edit message to remove buttons
+    await query.edit_message_reply_markup(reply_markup=None)
+
+    # Determine focus from callback data
+    focus_map = {
+        "focus_nutrition": ("nutrition", "🍽️"),
+        "focus_workout": ("workout", "💪"),
+        "focus_sleep": ("sleep", "😴"),
+        "focus_general": ("general", "🏃")
+    }
+
+    focus, emoji = focus_map.get(callback_data, ("general", "🏃"))
+
+    # Show appropriate demo based on focus
+    if focus == "nutrition":
+        message = (
+            "🍽️ **Perfect! Let's try it right now.**\n\n"
+            "Send me a photo of your last meal or snack.\n"
+            "I'll analyze it and show you calories + macros instantly.\n\n"
+            "📸 **Try it →** (send any food photo)"
+        )
+        await log_feature_discovery(user_id, "food_tracking", "onboarding")
+
+    elif focus == "workout":
+        message = (
+            "💪 **Nice! Let's log your first workout.**\n\n"
+            "Tell me what you did today. Examples:\n"
+            "• 'Just did 30 min cardio'\n"
+            "• 'Leg day: squats, deadlifts, lunges'\n"
+            "• 'Rest day'\n\n"
+            "I'll remember it and can remind you tomorrow!"
+        )
+        await log_feature_discovery(user_id, "custom_tracking", "onboarding")
+
+    elif focus == "sleep":
+        message = (
+            "😴 **Great choice! Sleep is crucial.**\n\n"
+            "Rate your sleep quality last night (1-10).\n\n"
+            "I'll track this and help you spot patterns!"
+        )
+        await log_feature_discovery(user_id, "custom_tracking", "onboarding")
+
+    else:  # general
+        message = (
+            "🏃 **Awesome! I'm here to help with everything.**\n\n"
+            "Let's start simple: Tell me about your health goals.\n"
+            "Just chat naturally - I'll suggest features as you need them!"
+        )
+
+    # Save focus to step_data
+    state = await get_onboarding_state(user_id)
+    step_data = state.get('step_data', {}) if state else {}
+    step_data['focus'] = focus
+
+    await query.message.reply_text(message, reply_markup=ReplyKeyboardRemove())
+    await update_onboarding_step(user_id, "feature_demo", step_data=step_data, mark_complete="focus_selection")
+
+    logger.info(f"User {user_id} selected focus: {focus}")
+
+
+# Register callback handlers
 onboarding_path_selection_handler = CallbackQueryHandler(
     handle_path_selection_callback,
     pattern="^onboard_(quick|full|chat)$"
+)
+
+onboarding_language_selection_handler = CallbackQueryHandler(
+    handle_language_selection_callback,
+    pattern="^lang_(native|english)$"
+)
+
+onboarding_focus_selection_handler = CallbackQueryHandler(
+    handle_focus_selection_callback,
+    pattern="^focus_(nutrition|workout|sleep|general)$"
 )

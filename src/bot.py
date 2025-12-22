@@ -27,7 +27,13 @@ from src.utils.vision import analyze_food_photo
 from src.utils.voice import transcribe_voice
 from src.models.food import FoodEntry
 from src.scheduler.reminder_manager import ReminderManager
-from src.handlers.onboarding import handle_onboarding_start, handle_onboarding_message, onboarding_path_selection_handler
+from src.handlers.onboarding import (
+    handle_onboarding_start,
+    handle_onboarding_message,
+    onboarding_path_selection_handler,
+    onboarding_language_selection_handler,
+    onboarding_focus_selection_handler
+)
 from src.handlers.sleep_quiz import sleep_quiz_handler
 from src.handlers.sleep_settings import sleep_settings_handler
 from src.handlers.reminders import (
@@ -1219,7 +1225,9 @@ def create_bot_application() -> Application:
 
     # Add onboarding callback handlers
     app.add_handler(onboarding_path_selection_handler)
-    logger.info("Onboarding callback handlers registered (path_selection)")
+    app.add_handler(onboarding_language_selection_handler)
+    app.add_handler(onboarding_focus_selection_handler)
+    logger.info("Onboarding callback handlers registered (path_selection, language, focus)")
 
     # Add message handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
