@@ -75,14 +75,25 @@ class MemoryFileManager:
         }
 
     async def update_profile(self, telegram_id: str, field: str, value: str) -> None:
-        """Update a profile field in profile.md"""
+        """Update a profile field in profile.md and log to audit table"""
+        from src.db.queries import audit_profile_update
+
         content = await self.read_file(telegram_id, "profile.md")
+
+        # Extract old value for audit
+        old_value = None
+        lines = content.split("\n")
+        for line in lines:
+            if line.startswith(f"- **{field}**:"):
+                # Extract value after the colon
+                parts = line.split(":", 1)
+                old_value = parts[1].strip() if len(parts) > 1 else None
+                break
 
         # Simple markdown update - append or update field
         field_line = f"- **{field}**: {value}\n"
 
         # Check if field exists and update, otherwise append
-        lines = content.split("\n")
         updated = False
         for i, line in enumerate(lines):
             if line.startswith(f"- **{field}**:"):
@@ -95,20 +106,39 @@ class MemoryFileManager:
             lines.append(field_line.rstrip())
 
         await self.write_file(telegram_id, "profile.md", "\n".join(lines))
+
+        # Audit the change
+        await audit_profile_update(telegram_id, field, old_value, value)
+
         logger.info(f"Updated profile field {field} for user {telegram_id}")
 
     async def update_preferences(self, telegram_id: str, preference: str, value: str) -> None:
-        """Update a preference in preferences.md"""
+        """Update a preference in preferences.md and log to audit table"""
+        from src.db.queries import audit_preference_update
+
         content = await self.read_file(telegram_id, "preferences.md")
+
+        # Extract old value for audit
+        old_value = None
+        lines = content.split("\n")
+        for line in lines:
+            if line.startswith(f"- **{preference}**:") or line.startswith(f"- {preference}:"):
+                # Extract value after the colon, handling both formats
+                parts = line.split(":", 1)
+                if len(parts) > 1:
+                    old_value = parts[1].strip()
+                    # Remove inline comments (e.g., "medium  # brief, medium, detailed")
+                    if "#" in old_value:
+                        old_value = old_value.split("#")[0].strip()
+                break
 
         # Simple markdown update
         pref_line = f"- **{preference}**: {value}\n"
 
         # Check if preference exists and update, otherwise append
-        lines = content.split("\n")
         updated = False
         for i, line in enumerate(lines):
-            if line.startswith(f"- **{preference}**:"):
+            if line.startswith(f"- **{preference}**:") or line.startswith(f"- {preference}:"):
                 lines[i] = pref_line.rstrip()
                 updated = True
                 break
@@ -118,6 +148,10 @@ class MemoryFileManager:
             lines.append(pref_line.rstrip())
 
         await self.write_file(telegram_id, "preferences.md", "\n".join(lines))
+
+        # Audit the change
+        await audit_preference_update(telegram_id, preference, old_value, value)
+
         logger.info(f"Updated preference {preference} for user {telegram_id}")
 
 
