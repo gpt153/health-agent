@@ -1028,21 +1028,44 @@ async def get_onboarding_state(user_id: str) -> Optional[dict]:
 
 
 async def start_onboarding(user_id: str, path: str) -> None:
-    """Initialize onboarding state for a user"""
+    """
+    Initialize or update onboarding state for a user
+
+    Args:
+        user_id: Telegram user ID
+        path: Onboarding path - "pending" (initial), "quick", "full", or "chat"
+
+    Note: Only sets current_step to 'path_selection' when path is "pending".
+    When path is quick/full/chat, only updates the path without resetting current_step.
+    """
     async with db.connection() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                INSERT INTO user_onboarding_state (user_id, onboarding_path, current_step)
-                VALUES (%s, %s, 'path_selection')
-                ON CONFLICT (user_id) DO UPDATE SET
-                    onboarding_path = EXCLUDED.onboarding_path,
-                    current_step = 'path_selection',
-                    started_at = CURRENT_TIMESTAMP,
-                    last_interaction_at = CURRENT_TIMESTAMP
-                """,
-                (user_id, path)
-            )
+            if path == "pending":
+                # Initial state: user hasn't selected a path yet
+                await cur.execute(
+                    """
+                    INSERT INTO user_onboarding_state (user_id, onboarding_path, current_step)
+                    VALUES (%s, %s, 'path_selection')
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        onboarding_path = EXCLUDED.onboarding_path,
+                        current_step = 'path_selection',
+                        started_at = CURRENT_TIMESTAMP,
+                        last_interaction_at = CURRENT_TIMESTAMP
+                    """,
+                    (user_id, path)
+                )
+            else:
+                # User selected a path: update path but DON'T reset current_step
+                await cur.execute(
+                    """
+                    INSERT INTO user_onboarding_state (user_id, onboarding_path, current_step)
+                    VALUES (%s, %s, 'path_selection')
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        onboarding_path = EXCLUDED.onboarding_path,
+                        last_interaction_at = CURRENT_TIMESTAMP
+                    """,
+                    (user_id, path)
+                )
             await conn.commit()
     logger.info(f"Started onboarding for {user_id} on path: {path}")
 
