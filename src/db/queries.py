@@ -2855,3 +2855,72 @@ async def get_user_achievements(user_id: str) -> list[dict]:
 async def unlock_user_achievement(user_id: str, achievement_id: str) -> bool:
     """Alias for add_user_achievement"""
     return await add_user_achievement(user_id, achievement_id)
+
+
+# Profile and Preference Audit Functions
+async def audit_profile_update(
+    user_id: str,
+    field_name: str,
+    old_value: Optional[str],
+    new_value: str,
+    updated_by: str = "user"
+) -> None:
+    """
+    Log profile field update to audit table
+
+    Args:
+        user_id: User's Telegram ID
+        field_name: Name of the profile field being updated
+        old_value: Previous value (None if new field)
+        new_value: New value being set
+        updated_by: Source of update ('user' or 'auto')
+
+    Purpose:
+        Creates audit trail for profile changes to track data modifications
+        and help debug issues where user data changes unexpectedly.
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO profile_update_audit (user_id, field_name, old_value, new_value, updated_by)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (user_id, field_name, old_value, new_value, updated_by)
+            )
+            await conn.commit()
+    logger.info(f"Audited profile update for user {user_id}: {field_name}")
+
+
+async def audit_preference_update(
+    user_id: str,
+    preference_name: str,
+    old_value: Optional[str],
+    new_value: str,
+    updated_by: str = "user"
+) -> None:
+    """
+    Log preference change to audit table
+
+    Args:
+        user_id: User's Telegram ID
+        preference_name: Name of the preference being updated
+        old_value: Previous value (None if new preference)
+        new_value: New value being set
+        updated_by: Source of update ('user' or 'auto')
+
+    Purpose:
+        Creates audit trail for preference changes to track modifications
+        and understand user behavior patterns.
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO preference_update_audit (user_id, preference_name, old_value, new_value, updated_by)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (user_id, preference_name, old_value, new_value, updated_by)
+            )
+            await conn.commit()
+    logger.info(f"Audited preference update for user {user_id}: {preference_name}")
