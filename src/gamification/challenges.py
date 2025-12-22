@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from src.db import queries
+from src.gamification.mock_store import mock_store  # FIXME: Migrate to database
 
 logger = logging.getLogger(__name__)
 
