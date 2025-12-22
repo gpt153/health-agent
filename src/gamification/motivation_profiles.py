@@ -17,7 +17,6 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
-from src.gamification import mock_store
 from src.gamification.xp_system import get_xp_history
 from src.gamification.streak_system import get_user_streaks
 from src.gamification.achievement_system import get_user_achievements

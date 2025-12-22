@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass
 from enum import Enum
 
-from src.gamification import mock_store
+from src.db import queries
 
 logger = logging.getLogger(__name__)
 

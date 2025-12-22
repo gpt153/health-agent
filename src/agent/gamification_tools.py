@@ -320,8 +320,8 @@ async def get_xp_history_tool(ctx: RunContext, limit: int = 10) -> XPHistoryResu
         user_id = ctx.deps.telegram_id
 
         # Get recent transactions
-        from src.gamification import mock_store
-        transactions = mock_store.get_xp_transactions(user_id, limit=limit)
+        from src.db import queries
+        transactions = await queries.get_xp_transactions(user_id, limit=limit)
 
         if not transactions:
             message = """📜 **XP HISTORY**

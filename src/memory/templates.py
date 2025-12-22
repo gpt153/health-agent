@@ -1,4 +1,12 @@
-"""Default markdown templates for user memory files"""
+"""Default markdown templates for user memory files
+
+MEMORY ARCHITECTURE CLARIFICATION:
+- profile.md: User demographics and health goals (KEEP)
+- preferences.md: Communication and feature preferences (KEEP)
+- patterns.md: REMOVED - redundant with Mem0 semantic memory
+- food_history.md: REMOVED - redundant with PostgreSQL food_entries table
+- visual_patterns.md: REMOVED - should be in database for queryability
+"""
 
 PROFILE_TEMPLATE = """# User Profile
 
@@ -29,39 +37,4 @@ PREFERENCES_TEMPLATE = """# Communication Preferences
 - Timezone: UTC  # IANA timezone (e.g., America/New_York, Europe/London, Asia/Tokyo)
 
 ## Notes
-"""
-
-PATTERNS_TEMPLATE = """# Behavioral Patterns
-
-## Observed Patterns
-(This will be updated automatically based on your interactions)
-
-## Food Preferences
-- Likes:
-- Dislikes:
-- Allergies/Restrictions:
-
-## Exercise Patterns
-- Typical workout days:
-- Preferred activities:
-
-## Notes
-"""
-
-FOOD_HISTORY_TEMPLATE = """# Recent Food History
-
-(Your recent food logs will appear here)
-"""
-
-VISUAL_PATTERNS_TEMPLATE = """# Visual Pattern Memory
-
-## Known Foods & Items
-(When you teach me what something looks like, I'll remember it here)
-
-### Examples:
-- **My protein shaker**: Clear plastic bottle with white liquid, contains 30g whey protein, ~150 calories
-- **My meal prep containers**: Black plastic containers with white lids, usually contain chicken and rice
-
-## Notes
-This helps me recognize your specific foods and containers better over time.
 """

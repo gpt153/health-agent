@@ -28,6 +28,7 @@ from src.db.queries import (
 )
 from src.memory.file_manager import MemoryFileManager
 from src.memory.system_prompt import generate_system_prompt
+from src.utils.datetime_helpers import now_utc, today_user_timezone
 from src.agent.dynamic_tools import (
     validate_tool_code,
     classify_tool_type,
@@ -423,12 +424,12 @@ async def log_tracking_entry(
                 data=data,
             )
 
-        # Create tracking entry
+        # Create tracking entry with UTC timestamp
         entry = TrackingEntry(
             id=str(uuid4()),
             user_id=deps.telegram_id,
             category_id=category["id"],
-            timestamp=datetime.now(),
+            timestamp=now_utc(),
             data=data,
             notes=notes,
         )
@@ -1030,11 +1031,12 @@ async def update_food_entry_tool(
         # Build macros dict if any macro values provided
         new_macros = None
         if any([new_protein is not None, new_carbs is not None, new_fat is not None]):
-            # Get current entry to fill in missing values
+            # Get current entry to fill in missing values (use user's timezone for date)
+            today = today_user_timezone(deps.telegram_id)
             entries = await get_food_entries_by_date(
                 user_id=deps.telegram_id,
-                start_date=datetime.now().strftime("%Y-%m-%d"),
-                end_date=datetime.now().strftime("%Y-%m-%d")
+                start_date=today.strftime("%Y-%m-%d"),
+                end_date=today.strftime("%Y-%m-%d")
             )
 
             # Find the entry by ID
