@@ -936,6 +936,22 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         from src.utils.nutrition_search import verify_food_items
         verified_foods = await verify_food_items(analysis.foods)
 
+        # Phase 1: Multi-Agent Validation
+        from src.agent.nutrition_validator import get_validator
+        validator = get_validator()
+
+        validated_analysis, validation_warnings = await validator.validate(
+            vision_result=analysis,
+            photo_path=str(photo_path),
+            caption=caption,
+            visual_patterns=visual_patterns,
+            usda_verified_items=verified_foods,
+            enable_cross_validation=True  # Enable multi-model cross-checking
+        )
+
+        # Use validated results
+        verified_foods = validated_analysis.foods
+
         # Build response message
         response_lines = ["🍽️ **Food Analysis:**"]
         if caption:
@@ -973,12 +989,18 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         total_fat = sum(f.macros.fat for f in verified_foods)
 
         response_lines.append(f"\n**Total:** {total_calories} cal | P: {total_protein}g | C: {total_carbs}g | F: {total_fat}g")
-        response_lines.append(f"\n_Confidence: {analysis.confidence}_")
+        response_lines.append(f"\n_Confidence: {validated_analysis.confidence}_")
+
+        # Add validation warnings if any
+        if validation_warnings:
+            response_lines.append("\n**⚠️ Validation Alerts:**")
+            for warning in validation_warnings:
+                response_lines.append(f"{warning}")
 
         # Add clarifying questions if any
-        if analysis.clarifying_questions:
+        if validated_analysis.clarifying_questions:
             response_lines.append("\n**Questions to improve accuracy:**")
-            for q in analysis.clarifying_questions:
+            for q in validated_analysis.clarifying_questions:
                 response_lines.append(f"• {q}")
 
         # Save to database
@@ -1034,7 +1056,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         photo_metadata = {
             "foods": [{"name": f.name, "quantity": f.quantity, "verification_source": f.verification_source} for f in verified_foods],
             "total_calories": total_calories,
-            "confidence": analysis.confidence
+            "confidence": validated_analysis.confidence,
+            "validation_warnings": validation_warnings if validation_warnings else None
         }
 
         await save_conversation_message(
