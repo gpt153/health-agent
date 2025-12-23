@@ -3086,6 +3086,39 @@ async def unlock_user_achievement(user_id: str, achievement_id: str) -> bool:
     return await add_user_achievement(user_id, achievement_id)
 
 
+# API Compatibility Wrapper Functions
+async def get_user_xp_level(user_id: str) -> dict:
+    """
+    Wrapper for API compatibility - returns XP data in expected format
+
+    Converts get_user_xp_data() output to match API endpoint expectations.
+
+    Returns:
+        {
+            'xp': int,               # total_xp
+            'level': int,            # current_level
+            'tier': str,             # level_tier
+            'xp_to_next_level': int  # xp_to_next_level
+        }
+    """
+    xp_data = await get_user_xp_data(user_id)
+    return {
+        'xp': xp_data['total_xp'],
+        'level': xp_data['current_level'],
+        'tier': xp_data['level_tier'],
+        'xp_to_next_level': xp_data['xp_to_next_level']
+    }
+
+
+async def get_user_streaks(user_id: str) -> list[dict]:
+    """
+    Wrapper for API compatibility - alias to get_all_user_streaks
+
+    Returns all streaks for the user.
+    """
+    return await get_all_user_streaks(user_id)
+
+
 # Profile and Preference Audit Functions
 async def audit_profile_update(
     user_id: str,
