@@ -137,6 +137,21 @@ class FoodEntryUpdateResult(BaseModel):
     correction_note: Optional[str] = None
 
 
+class FoodEntryValidatedResult(BaseModel):
+    """Result of validated food entry from text"""
+
+    success: bool
+    message: str
+    total_calories: float
+    total_protein: float
+    total_carbs: float
+    total_fat: float
+    foods: list[dict]
+    validation_warnings: Optional[list[str]] = None
+    confidence: str  # high/medium/low
+    entry_id: Optional[str] = None
+
+
 class RememberFactResult(BaseModel):
     """Result of explicit fact remembering"""
 
@@ -1095,6 +1110,176 @@ async def update_food_entry_tool(
         return FoodEntryUpdateResult(
             success=False,
             message=f"Error updating food entry: {str(e)}"
+        )
+
+
+@agent.tool
+async def log_food_from_text_validated(
+    ctx,
+    food_description: str,
+    quantity: Optional[str] = None,
+    meal_type: Optional[str] = None
+) -> FoodEntryValidatedResult:
+    """
+    **LOG FOOD FROM TEXT WITH VALIDATION** - Use when user describes food they ate
+
+    This tool applies the SAME rigorous validation as photo analysis:
+    - Multi-agent cross-checking
+    - USDA verification
+    - Reasonableness validation
+    - Provides accuracy warnings
+
+    Use this when:
+    - User says "I ate X"
+    - User describes a meal in text
+    - User provides food + quantity
+
+    Examples:
+    - "I ate 150g chicken breast and a small salad"
+    - "Just had a Chipotle burrito bowl"
+    - "Lunch: 2 eggs, toast with butter"
+
+    Args:
+        food_description: What they ate (e.g., "grilled chicken and rice")
+        quantity: Amount if specified (e.g., "150g", "1 serving", "medium bowl")
+        meal_type: breakfast/lunch/dinner/snack (optional)
+
+    Returns:
+        FoodEntryValidatedResult with calories, macros, and validation warnings
+    """
+    deps: AgentDeps = ctx.deps
+
+    try:
+        # Step 1: Parse text description into structured food data
+        from src.utils.food_text_parser import parse_food_description
+
+        logger.info(f"Parsing food description: {food_description}")
+
+        parsed_result = await parse_food_description(
+            description=food_description,
+            quantity=quantity,
+            user_id=deps.telegram_id
+        )
+
+        # Step 2: Apply SAME validation pipeline as photos
+        from src.agent.nutrition_validator import get_validator
+        from src.utils.nutrition_search import verify_food_items
+
+        # USDA verification
+        verified_foods = await verify_food_items(parsed_result.foods)
+
+        # Multi-agent validation
+        validator = get_validator()
+        validated_analysis, validation_warnings = await validator.validate(
+            vision_result=parsed_result,
+            photo_path=None,  # No photo for text entries
+            caption=food_description,
+            visual_patterns=None,
+            usda_verified_items=verified_foods,
+            enable_cross_validation=True  # Same as photos!
+        )
+
+        # Use validated results
+        validated_foods = validated_analysis.foods
+
+        # Step 3: Calculate totals
+        total_calories = sum(f.calories for f in validated_foods)
+        total_protein = sum(f.macros.protein for f in validated_foods)
+        total_carbs = sum(f.macros.carbs for f in validated_foods)
+        total_fat = sum(f.macros.fat for f in validated_foods)
+
+        # Step 4: Save to database
+        from src.models.food import FoodEntry, FoodMacros
+        from uuid import uuid4
+
+        entry = FoodEntry(
+            id=str(uuid4()),
+            user_id=deps.telegram_id,
+            timestamp=parsed_result.timestamp or now_utc(),
+            photo_path=None,  # Text entry
+            foods=validated_foods,
+            total_calories=total_calories,
+            total_macros=FoodMacros(
+                protein=total_protein,
+                carbs=total_carbs,
+                fat=total_fat
+            ),
+            meal_type=meal_type,
+            notes=food_description
+        )
+
+        await save_food_entry(entry)
+        logger.info(f"Saved validated text food entry for {deps.telegram_id}")
+
+        # Step 5: Format response with validation info
+        foods_list = [
+            {
+                "name": f.name,
+                "quantity": f.quantity,
+                "calories": f.calories,
+                "protein": f.macros.protein,
+                "verification_source": f.verification_source
+            }
+            for f in validated_foods
+        ]
+
+        # Build response message with warnings
+        message_parts = [
+            f"✅ **Food logged:** {food_description}",
+            "",
+            "**Foods:**"
+        ]
+
+        for food in validated_foods:
+            badge = ""
+            if food.verification_source == "usda":
+                badge = " ✓"
+            elif food.verification_source == "ai_estimate":
+                badge = " ~"
+
+            message_parts.append(f"• {food.name}{badge} ({food.quantity})")
+            message_parts.append(f"  └ {food.calories} cal | P: {food.macros.protein}g | C: {food.macros.carbs}g | F: {food.macros.fat}g")
+
+        message_parts.append(f"\n**Total:** {total_calories} cal | P: {total_protein}g | C: {total_carbs}g | F: {total_fat}g")
+        message_parts.append(f"\n_Confidence: {validated_analysis.confidence}_")
+
+        if validation_warnings:
+            message_parts.append("\n**⚠️ Validation Alerts:**")
+            for warning in validation_warnings:
+                message_parts.append(f"• {warning}")
+
+        if validated_analysis.clarifying_questions:
+            message_parts.append("\n**Questions to improve accuracy:**")
+            for q in validated_analysis.clarifying_questions:
+                message_parts.append(f"• {q}")
+
+        message = "\n".join(message_parts)
+
+        return FoodEntryValidatedResult(
+            success=True,
+            message=message,
+            total_calories=total_calories,
+            total_protein=total_protein,
+            total_carbs=total_carbs,
+            total_fat=total_fat,
+            foods=foods_list,
+            validation_warnings=validation_warnings if validation_warnings else None,
+            confidence=validated_analysis.confidence,
+            entry_id=entry.id
+        )
+
+    except Exception as e:
+        logger.error(f"Error in log_food_from_text_validated: {e}", exc_info=True)
+        return FoodEntryValidatedResult(
+            success=False,
+            message=f"Error logging food: {str(e)}",
+            total_calories=0.0,
+            total_protein=0.0,
+            total_carbs=0.0,
+            total_fat=0.0,
+            foods=[],
+            validation_warnings=None,
+            confidence="low"
         )
 
 
@@ -2135,6 +2320,7 @@ async def get_agent_response(
         dynamic_agent.tool(suggest_reminder_optimizations)
         dynamic_agent.tool(get_user_achievements_display)
         dynamic_agent.tool(get_daily_food_summary)
+        dynamic_agent.tool(log_food_from_text_validated)  # Text food logging with validation
         dynamic_agent.tool(remember_visual_pattern)
         dynamic_agent.tool(create_dynamic_tool)
         # Gamification tools
@@ -2195,6 +2381,7 @@ async def get_agent_response(
                 fallback_agent.tool(suggest_reminder_optimizations)
                 fallback_agent.tool(get_user_achievements_display)
                 fallback_agent.tool(get_daily_food_summary)
+                fallback_agent.tool(log_food_from_text_validated)  # Text food logging with validation
                 fallback_agent.tool(remember_visual_pattern)
                 fallback_agent.tool(create_dynamic_tool)
                 # Gamification tools
