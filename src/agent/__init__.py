@@ -1091,9 +1091,33 @@ async def update_food_entry_tool(
                 f"Food entry updated: {entry_id} from {old_cal} to {new_cal} kcal"
             )
 
+            # Phase 4: Save correction to learning system
+            try:
+                from src.utils.food_calibration import save_correction
+
+                # Get food entry details to track which food was corrected
+                food_entry = result.get("entry")
+                if food_entry and food_entry.get("foods"):
+                    # Assume correction applies to the largest food item
+                    foods = food_entry["foods"]
+                    largest_food = max(foods, key=lambda f: f.get("calories", 0))
+
+                    await save_correction(
+                        user_id=deps.telegram_id,
+                        food_name=largest_food.get("name", "unknown"),
+                        original_calories=old_cal,
+                        corrected_calories=new_cal,
+                        entry_id=entry_id
+                    )
+
+                    logger.info(f"Saved correction pattern for future estimates")
+
+            except Exception as e:
+                logger.warning(f"Failed to save correction pattern: {e}")
+
             return FoodEntryUpdateResult(
                 success=True,
-                message=f"Updated food entry: {old_cal} → {new_cal} kcal. This correction is now permanent!",
+                message=f"✅ Updated: {old_cal} → {new_cal} kcal\n\nCorrection saved! Future estimates will be more accurate based on your feedback.",
                 entry_id=entry_id,
                 old_calories=float(old_cal) if old_cal else None,
                 new_calories=float(new_cal) if new_cal else None,
@@ -1195,6 +1219,15 @@ async def log_food_from_text_validated(
         # Extract confidence from consensus
         validated_confidence = consensus.agreement_level
 
+        # Step 2.5: Apply learned calibration (Phase 4)
+        from src.utils.food_calibration import calibrate_foods
+
+        logger.info("Applying learned calibration factors")
+        calibrated_foods = await calibrate_foods(validated_foods, user_id=deps.telegram_id)
+
+        # Use calibrated results
+        validated_foods = calibrated_foods
+
         # Step 3: Calculate totals
         total_calories = sum(f.calories for f in validated_foods)
         total_protein = sum(f.macros.protein for f in validated_foods)
@@ -1247,13 +1280,15 @@ async def log_food_from_text_validated(
             badge = ""
             if food.verification_source == "usda":
                 badge = " ✓"
+            elif "calibrated" in food.verification_source:
+                badge = " 📊"  # Calibrated based on corrections
             elif food.verification_source == "consensus_average":
                 badge = " 🤖"
             elif "anthropic" in food.verification_source or "openai" in food.verification_source:
                 badge = " ~"
 
             message_parts.append(f"• {food.name}{badge} ({food.quantity})")
-            message_parts.append(f"  └ {food.calories} cal | P: {food.macros.protein}g | C: {food.macros.carbs}g | F: {food.macros.fat}g")
+            message_parts.append(f"  └ {food.calories} cal | P: {food.macros.protein:.1f}g | C: {food.macros.carbs:.1f}g | F: {food.macros.fat:.1f}g")
 
         message_parts.append(f"\n**Total:** {total_calories} cal | P: {total_protein}g | C: {total_carbs}g | F: {total_fat}g")
         message_parts.append(f"_Confidence: {validated_confidence} ({consensus.confidence_score:.0%})_")
