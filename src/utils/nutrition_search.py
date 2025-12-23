@@ -407,7 +407,23 @@ async def verify_food_items(food_items: List[FoodItem]) -> List[FoodItem]:
 
         except Exception as e:
             logger.error(f"Error verifying '{item.name}': {e}", exc_info=True)
-            # Fallback to AI estimate
+
+            # Phase 3: Try web search as fallback before giving up
+            try:
+                from src.utils.web_nutrition_search import verify_with_web_search
+
+                logger.info(f"USDA failed for '{item.name}', attempting web search fallback")
+                web_verified = await verify_with_web_search(item, usda_failed=True)
+
+                if web_verified:
+                    logger.info(f"Web search found data for '{item.name}'")
+                    verified_items.append(web_verified)
+                    continue
+
+            except Exception as web_error:
+                logger.warning(f"Web search fallback also failed: {web_error}")
+
+            # Final fallback: AI estimate only
             item.verification_source = "ai_estimate"
             item.confidence_score = 0.5
             verified_items.append(item)
