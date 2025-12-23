@@ -14,6 +14,58 @@ _cache: Dict[str, Tuple[Dict[Any, Any], datetime]] = {}
 CACHE_DURATION = timedelta(hours=24)  # Cache for 24 hours
 API_TIMEOUT = 5.0  # 5 second timeout for API calls
 
+# Phase 2: Pre-cached common foods to reduce API calls
+_common_foods_cache = {
+    "chicken breast": {
+        "description": "Chicken, broilers or fryers, breast, meat only, cooked, roasted",
+        "score": 95,
+        "calories_per_100g": 165,
+        "protein_per_100g": 31.0,
+        "carbs_per_100g": 0.0,
+        "fat_per_100g": 3.6
+    },
+    "egg": {
+        "description": "Egg, whole, cooked, hard-boiled",
+        "score": 95,
+        "calories_per_100g": 155,
+        "protein_per_100g": 12.6,
+        "carbs_per_100g": 1.1,
+        "fat_per_100g": 10.6
+    },
+    "rice": {
+        "description": "Rice, white, long-grain, regular, cooked",
+        "score": 95,
+        "calories_per_100g": 130,
+        "protein_per_100g": 2.7,
+        "carbs_per_100g": 28.2,
+        "fat_per_100g": 0.3
+    },
+    "salmon": {
+        "description": "Fish, salmon, Atlantic, farmed, cooked, dry heat",
+        "score": 95,
+        "calories_per_100g": 206,
+        "protein_per_100g": 22.5,
+        "carbs_per_100g": 0.0,
+        "fat_per_100g": 12.4
+    },
+    "banana": {
+        "description": "Bananas, raw",
+        "score": 95,
+        "calories_per_100g": 89,
+        "protein_per_100g": 1.1,
+        "carbs_per_100g": 22.8,
+        "fat_per_100g": 0.3
+    },
+    "apple": {
+        "description": "Apples, raw, with skin",
+        "score": 95,
+        "calories_per_100g": 52,
+        "protein_per_100g": 0.3,
+        "carbs_per_100g": 13.8,
+        "fat_per_100g": 0.2
+    },
+}
+
 
 def normalize_food_name(name: str) -> str:
     """
@@ -251,8 +303,12 @@ def scale_nutrients(
 
 async def verify_food_items(food_items: List[FoodItem]) -> List[FoodItem]:
     """
-    Verify food items against USDA database.
-    Main entry point for verification.
+    Verify food items against USDA database with confidence-based routing.
+
+    Phase 2 Enhancement: Implements confidence-based routing strategy:
+    - High confidence (>0.7): Prefer USDA data
+    - Medium confidence (0.4-0.7): Blend USDA + AI
+    - Low confidence (<0.4): Use AI estimate only
 
     Args:
         food_items: List of FoodItem from vision AI
@@ -287,7 +343,8 @@ async def verify_food_items(food_items: List[FoodItem]) -> List[FoodItem]:
 
             # Get best match (first result is usually best)
             best_match = usda_results['foods'][0]
-            logger.info(f"USDA match: '{best_match.get('description')}' (score: {best_match.get('score', 0)})")
+            usda_confidence = min(best_match.get('score', 100) / 100, 1.0)
+            logger.info(f"USDA match: '{best_match.get('description')}' (confidence: {usda_confidence:.2f})")
 
             # Scale nutrients to target quantity
             scaled_nutrients = scale_nutrients(best_match, amount, unit)
@@ -299,36 +356,100 @@ async def verify_food_items(food_items: List[FoodItem]) -> List[FoodItem]:
                 verified_items.append(item)
                 continue
 
-            # Create verified food item with USDA data
-            verified_macros = FoodMacros(
-                protein=scaled_nutrients.get('protein', item.macros.protein),
-                carbs=scaled_nutrients.get('carbs', item.macros.carbs),
-                fat=scaled_nutrients.get('fat', item.macros.fat),
-                micronutrients=Micronutrients(
-                    fiber=scaled_nutrients.get('fiber'),
-                    sodium=scaled_nutrients.get('sodium'),
-                    sugar=scaled_nutrients.get('sugar'),
-                    vitamin_c=scaled_nutrients.get('vitamin_c'),
-                    calcium=scaled_nutrients.get('calcium'),
-                    iron=scaled_nutrients.get('iron')
+            # Phase 2: Confidence-based routing
+            if usda_confidence > 0.7:
+                # HIGH CONFIDENCE: Prefer USDA data
+                logger.info(f"High USDA confidence ({usda_confidence:.2f}), using USDA data")
+
+                verified_macros = FoodMacros(
+                    protein=scaled_nutrients.get('protein', item.macros.protein),
+                    carbs=scaled_nutrients.get('carbs', item.macros.carbs),
+                    fat=scaled_nutrients.get('fat', item.macros.fat),
+                    micronutrients=Micronutrients(
+                        fiber=scaled_nutrients.get('fiber'),
+                        sodium=scaled_nutrients.get('sodium'),
+                        sugar=scaled_nutrients.get('sugar'),
+                        vitamin_c=scaled_nutrients.get('vitamin_c'),
+                        calcium=scaled_nutrients.get('calcium'),
+                        iron=scaled_nutrients.get('iron')
+                    )
                 )
-            )
 
-            verified_item = FoodItem(
-                name=item.name,
-                quantity=item.quantity,
-                calories=int(scaled_nutrients.get('calories', item.calories)),
-                macros=verified_macros,
-                verification_source="usda",
-                confidence_score=min(best_match.get('score', 100) / 100, 1.0)
-            )
+                verified_item = FoodItem(
+                    name=item.name,
+                    quantity=item.quantity,
+                    calories=int(scaled_nutrients.get('calories', item.calories)),
+                    macros=verified_macros,
+                    verification_source="usda",
+                    confidence_score=usda_confidence
+                )
 
-            logger.info(f"Verified '{item.name}': {verified_item.calories} cal (USDA)")
+            elif usda_confidence > 0.4:
+                # MEDIUM CONFIDENCE: Blend USDA + AI
+                logger.info(f"Medium USDA confidence ({usda_confidence:.2f}), blending with AI estimate")
+
+                # Blend strategy: Weight by confidence
+                # USDA weight = usda_confidence, AI weight = (1 - usda_confidence)
+                usda_weight = usda_confidence
+                ai_weight = 1 - usda_confidence
+
+                blended_calories = int(
+                    scaled_nutrients.get('calories', 0) * usda_weight +
+                    item.calories * ai_weight
+                )
+
+                blended_macros = FoodMacros(
+                    protein=scaled_nutrients.get('protein', 0) * usda_weight + item.macros.protein * ai_weight,
+                    carbs=scaled_nutrients.get('carbs', 0) * usda_weight + item.macros.carbs * ai_weight,
+                    fat=scaled_nutrients.get('fat', 0) * usda_weight + item.macros.fat * ai_weight,
+                    micronutrients=Micronutrients(
+                        fiber=scaled_nutrients.get('fiber'),
+                        sodium=scaled_nutrients.get('sodium'),
+                        sugar=scaled_nutrients.get('sugar'),
+                        vitamin_c=scaled_nutrients.get('vitamin_c'),
+                        calcium=scaled_nutrients.get('calcium'),
+                        iron=scaled_nutrients.get('iron')
+                    ) if scaled_nutrients.get('fiber') else None
+                )
+
+                verified_item = FoodItem(
+                    name=item.name,
+                    quantity=item.quantity,
+                    calories=blended_calories,
+                    macros=blended_macros,
+                    verification_source="usda+ai_blend",
+                    confidence_score=0.6  # Medium confidence for blended
+                )
+
+            else:
+                # LOW CONFIDENCE: Use AI estimate
+                logger.info(f"Low USDA confidence ({usda_confidence:.2f}), using AI estimate")
+                item.verification_source = "ai_estimate"
+                item.confidence_score = 0.5
+                verified_item = item
+
+            logger.info(f"Verified '{item.name}': {verified_item.calories} cal ({verified_item.verification_source})")
             verified_items.append(verified_item)
 
         except Exception as e:
             logger.error(f"Error verifying '{item.name}': {e}", exc_info=True)
-            # Fallback to AI estimate
+
+            # Phase 3: Try web search as fallback before giving up
+            try:
+                from src.utils.web_nutrition_search import verify_with_web_search
+
+                logger.info(f"USDA failed for '{item.name}', attempting web search fallback")
+                web_verified = await verify_with_web_search(item, usda_failed=True)
+
+                if web_verified:
+                    logger.info(f"Web search found data for '{item.name}'")
+                    verified_items.append(web_verified)
+                    continue
+
+            except Exception as web_error:
+                logger.warning(f"Web search fallback also failed: {web_error}")
+
+            # Final fallback: AI estimate only
             item.verification_source = "ai_estimate"
             item.confidence_score = 0.5
             verified_items.append(item)
