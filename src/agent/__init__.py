@@ -1161,26 +1161,39 @@ async def log_food_from_text_validated(
             user_id=deps.telegram_id
         )
 
-        # Step 2: Apply SAME validation pipeline as photos
-        from src.agent.nutrition_validator import get_validator
+        # Step 2: Apply CONSENSUS VALIDATION (Phase 2)
+        # Use multi-agent consensus system for cross-checking
+        from src.agent.nutrition_consensus import get_consensus_engine
         from src.utils.nutrition_search import verify_food_items
 
-        # USDA verification
-        verified_foods = await verify_food_items(parsed_result.foods)
+        logger.info("Getting consensus estimate from multiple agents")
 
-        # Multi-agent validation
-        validator = get_validator()
-        validated_analysis, validation_warnings = await validator.validate(
-            vision_result=parsed_result,
-            photo_path=None,  # No photo for text entries
+        consensus_engine = get_consensus_engine()
+        consensus = await consensus_engine.get_consensus(
+            photo_path=None,
+            image_data=None,
             caption=food_description,
             visual_patterns=None,
-            usda_verified_items=verified_foods,
-            enable_cross_validation=True  # Same as photos!
+            parsed_text_result=parsed_result
         )
 
-        # Use validated results
-        validated_foods = validated_analysis.foods
+        # USDA verification
+        verified_foods = await verify_food_items(consensus.final_foods)
+
+        # Blend with USDA if available
+        if verified_foods:
+            logger.info("Blending consensus with USDA verification")
+            # Replace foods with USDA-verified versions where available
+            for i, food in enumerate(consensus.final_foods):
+                if i < len(verified_foods) and verified_foods[i].verification_source == "usda":
+                    consensus.final_foods[i] = verified_foods[i]
+
+        # Use consensus results
+        validated_foods = consensus.final_foods
+        validation_warnings = consensus.validation_warnings + consensus.discrepancies
+
+        # Extract confidence from consensus
+        validated_confidence = consensus.agreement_level
 
         # Step 3: Calculate totals
         total_calories = sum(f.calories for f in validated_foods)
@@ -1223,7 +1236,7 @@ async def log_food_from_text_validated(
             for f in validated_foods
         ]
 
-        # Build response message with warnings
+        # Build response message with consensus information
         message_parts = [
             f"✅ **Food logged:** {food_description}",
             "",
@@ -1234,23 +1247,29 @@ async def log_food_from_text_validated(
             badge = ""
             if food.verification_source == "usda":
                 badge = " ✓"
-            elif food.verification_source == "ai_estimate":
+            elif food.verification_source == "consensus_average":
+                badge = " 🤖"
+            elif "anthropic" in food.verification_source or "openai" in food.verification_source:
                 badge = " ~"
 
             message_parts.append(f"• {food.name}{badge} ({food.quantity})")
             message_parts.append(f"  └ {food.calories} cal | P: {food.macros.protein}g | C: {food.macros.carbs}g | F: {food.macros.fat}g")
 
         message_parts.append(f"\n**Total:** {total_calories} cal | P: {total_protein}g | C: {total_carbs}g | F: {total_fat}g")
-        message_parts.append(f"\n_Confidence: {validated_analysis.confidence}_")
+        message_parts.append(f"_Confidence: {validated_confidence} ({consensus.confidence_score:.0%})_")
+
+        # Add consensus explanation
+        if consensus.consensus_explanation:
+            message_parts.append(f"\n{consensus.consensus_explanation}")
 
         if validation_warnings:
             message_parts.append("\n**⚠️ Validation Alerts:**")
-            for warning in validation_warnings:
+            for warning in validation_warnings[:5]:  # Limit to 5
                 message_parts.append(f"• {warning}")
 
-        if validated_analysis.clarifying_questions:
+        if consensus.clarifying_questions:
             message_parts.append("\n**Questions to improve accuracy:**")
-            for q in validated_analysis.clarifying_questions:
+            for q in consensus.clarifying_questions[:3]:  # Limit to 3
                 message_parts.append(f"• {q}")
 
         message = "\n".join(message_parts)
@@ -1264,7 +1283,7 @@ async def log_food_from_text_validated(
             total_fat=total_fat,
             foods=foods_list,
             validation_warnings=validation_warnings if validation_warnings else None,
-            confidence=validated_analysis.confidence,
+            confidence=validated_confidence,
             entry_id=entry.id
         )
 

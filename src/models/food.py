@@ -31,6 +31,8 @@ class FoodItem(BaseModel):
     macros: FoodMacros
     verification_source: Optional[str] = None  # "usda", "ai_estimate", etc.
     confidence_score: Optional[float] = None  # 0.0-1.0 for verification quality
+    food_category: Optional[str] = None  # "protein", "vegetables", "grains", etc.
+    confidence: Optional[str] = None  # "high", "medium", "low" - for individual food confidence
 
 
 class FoodEntry(BaseModel):
