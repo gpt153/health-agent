@@ -40,6 +40,7 @@ class ReminderManager:
                 schedule = json.loads(reminder["schedule"]) if isinstance(reminder["schedule"], str) else reminder["schedule"]
                 reminder_time = schedule.get("time", "09:00")
                 timezone = schedule.get("timezone", "UTC")
+                days = schedule.get("days", list(range(7)))  # Extract days filter
 
                 # Schedule the reminder with reminder_id
                 await self.schedule_custom_reminder(
@@ -48,7 +49,8 @@ class ReminderManager:
                     message=message,
                     reminder_type=reminder_type,
                     user_timezone=timezone,
-                    reminder_id=reminder_id
+                    reminder_id=reminder_id,
+                    days=days  # Pass days filter
                 )
 
                 scheduled_count += 1
@@ -99,7 +101,14 @@ class ReminderManager:
             logger.error(f"Failed to schedule tracking reminder: {e}", exc_info=True)
 
     async def schedule_custom_reminder(
-        self, user_id: str, reminder_time: str, message: str, reminder_type: str = "daily", user_timezone: str = "UTC", reminder_id: str = None
+        self,
+        user_id: str,
+        reminder_time: str,
+        message: str,
+        reminder_type: str = "daily",
+        user_timezone: str = "UTC",
+        reminder_id: str = None,
+        days: list[int] = None
     ) -> None:
         """
         Schedule a custom reminder
@@ -111,6 +120,7 @@ class ReminderManager:
             reminder_type: "daily", "weekly", or "custom"
             user_timezone: IANA timezone string (e.g., "America/New_York")
             reminder_id: UUID of reminder in database (optional, for completion tracking)
+            days: List of weekday integers (0=Monday, 6=Sunday). None = all days.
         """
         try:
             # Parse time and apply user's timezone
@@ -119,6 +129,10 @@ class ReminderManager:
             # Create timezone-aware time
             tz = ZoneInfo(user_timezone)
             scheduled_time = time(hour=hour, minute=minute, tzinfo=tz)
+
+            # Default to all days if not specified
+            if days is None:
+                days = list(range(7))
 
             # Schedule based on type
             if reminder_type == "daily":
@@ -130,15 +144,17 @@ class ReminderManager:
                         "message": message,
                         "reminder_id": reminder_id,
                         "scheduled_time": reminder_time,
-                        "timezone": user_timezone
+                        "timezone": user_timezone,
+                        "days": days  # Include days filter
                     },
-                    name=f"custom_reminder_{user_id}_{hour}{minute}",
+                    name=f"custom_reminder_{reminder_id}",  # Use UUID for uniqueness
                 )
             else:
                 logger.warning(f"Reminder type {reminder_type} not implemented yet")
 
             logger.info(
-                f"Scheduled {reminder_type} reminder for {user_id} at {reminder_time} {user_timezone}"
+                f"Scheduled {reminder_type} reminder for {user_id} "
+                f"at {reminder_time} {user_timezone} (days: {days})"
             )
 
         except Exception as e:
@@ -164,6 +180,19 @@ class ReminderManager:
 
         logger.warning(f"Reminder not found: {job_name}")
         return False
+
+    async def cancel_reminder_by_id(self, reminder_id: str) -> bool:
+        """
+        Cancel a scheduled reminder by its reminder_id
+
+        Args:
+            reminder_id: UUID of the reminder
+
+        Returns:
+            True if cancelled, False if not found
+        """
+        job_name = f"custom_reminder_{reminder_id}"
+        return await self.cancel_reminder(job_name)
 
     async def schedule_sleep_quiz(
         self, user_id: str, preferred_time: time, user_timezone: str = "UTC", language_code: str = "en"
@@ -303,8 +332,23 @@ class ReminderManager:
         message = data["message"]
         reminder_id = data.get("reminder_id")
         scheduled_time = data.get("scheduled_time", "")
+        timezone_str = data.get("timezone", "UTC")
+        scheduled_days = data.get("days", list(range(7)))  # Get days filter
 
         try:
+            # Check if today is a scheduled day
+            from zoneinfo import ZoneInfo
+            from datetime import datetime
+            user_tz = ZoneInfo(timezone_str)
+            now_user = datetime.now(user_tz)
+            current_weekday = now_user.weekday()  # 0=Monday, 6=Sunday
+
+            if current_weekday not in scheduled_days:
+                logger.debug(
+                    f"Skipping reminder {reminder_id} for {user_id}: "
+                    f"Today ({current_weekday}) not in scheduled days {scheduled_days}"
+                )
+                return  # Don't send reminder today
             # Get reminder from database to check tracking preference
             from src.db.queries import get_reminder_by_id
 

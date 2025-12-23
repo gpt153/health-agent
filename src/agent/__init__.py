@@ -114,6 +114,24 @@ class ReminderStatisticsResult(BaseModel):
     analytics: Optional[dict] = None
 
 
+class ReminderOperationResult(BaseModel):
+    """Result of reminder delete/update operation"""
+
+    success: bool
+    message: str
+    reminder_id: Optional[str] = None
+
+
+class CleanupResult(BaseModel):
+    """Result of cleanup operation"""
+
+    success: bool
+    message: str
+    checked: int = 0
+    deactivated: int = 0
+    groups: int = 0
+
+
 class FoodSummaryResult(BaseModel):
     """Result of food summary query"""
 
@@ -502,6 +520,37 @@ async def schedule_reminder(
                     user_timezone = parts[-1].strip()
                     break
 
+        # Check for duplicate reminders before creating
+        from src.db.queries import get_active_reminders
+        existing_reminders = await get_active_reminders(deps.telegram_id)
+
+        for existing in existing_reminders:
+            existing_schedule = existing.get("schedule", {})
+            if isinstance(existing_schedule, str):
+                existing_schedule = json.loads(existing_schedule)
+
+            existing_time = existing_schedule.get("time")
+            existing_tz = existing_schedule.get("timezone", "UTC")
+            existing_msg = existing.get("message", "")
+
+            # Check for exact duplicate
+            if (existing_msg == message and
+                existing_time == reminder_time and
+                existing_tz == user_timezone):
+
+                return ReminderScheduleResult(
+                    success=False,
+                    message=(
+                        f"⚠️ You already have this reminder scheduled!\n\n"
+                        f"📝 Message: {message}\n"
+                        f"⏰ Time: {reminder_time} {user_timezone}\n\n"
+                        f"If you want to modify it, ask me to delete it first, "
+                        f"then create a new one."
+                    ),
+                    reminder_time=reminder_time,
+                    reminder_message=message,
+                )
+
         # Save reminder to database for persistence
         from src.models.reminder import Reminder, ReminderSchedule
         from src.db.queries import create_reminder
@@ -865,6 +914,266 @@ async def suggest_reminder_optimizations(
             message=f"Error analyzing reminder patterns: {str(e)}",
             suggestions=[],
             reminder_name=reminder_description
+        )
+
+
+@agent.tool
+async def delete_reminder(ctx, reminder_id: str) -> ReminderOperationResult:
+    """
+    Delete a reminder by its ID
+
+    Args:
+        reminder_id: The UUID of the reminder to delete
+
+    Returns:
+        ReminderOperationResult with success status
+    """
+    deps: AgentDeps = ctx.deps
+
+    try:
+        from src.db.queries import delete_reminder as db_delete_reminder
+        from src.db.queries import get_reminder_by_id
+
+        # Get reminder details for confirmation message
+        reminder = await get_reminder_by_id(reminder_id)
+
+        if not reminder:
+            return ReminderOperationResult(
+                success=False,
+                message=f"❌ Reminder not found: {reminder_id}",
+                reminder_id=reminder_id
+            )
+
+        # Security: Verify it belongs to this user
+        if reminder["user_id"] != deps.telegram_id:
+            return ReminderOperationResult(
+                success=False,
+                message="❌ You can only delete your own reminders",
+                reminder_id=reminder_id
+            )
+
+        # Delete from database
+        deleted = await db_delete_reminder(reminder_id, deps.telegram_id)
+
+        if not deleted:
+            return ReminderOperationResult(
+                success=False,
+                message=f"❌ Failed to delete reminder {reminder_id}",
+                reminder_id=reminder_id
+            )
+
+        # Cancel from job queue
+        if deps.reminder_manager:
+            await deps.reminder_manager.cancel_reminder_by_id(reminder_id)
+
+        # Format confirmation
+        schedule = reminder.get("schedule", {})
+        if isinstance(schedule, str):
+            schedule = json.loads(schedule)
+
+        message_text = reminder.get("message", "")
+        time_str = schedule.get("time", "")
+        tz_str = schedule.get("timezone", "UTC")
+
+        return ReminderOperationResult(
+            success=True,
+            message=(
+                f"✅ Deleted reminder:\n\n"
+                f"📝 {message_text}\n"
+                f"⏰ {time_str} {tz_str}"
+            ),
+            reminder_id=reminder_id
+        )
+
+    except Exception as e:
+        logger.error(f"Error deleting reminder: {e}", exc_info=True)
+        return ReminderOperationResult(
+            success=False,
+            message=f"❌ Error: {str(e)}",
+            reminder_id=reminder_id
+        )
+
+
+@agent.tool
+async def update_reminder(
+    ctx,
+    reminder_id: str,
+    new_time: Optional[str] = None,
+    new_message: Optional[str] = None
+) -> ReminderOperationResult:
+    """
+    Update an existing reminder's time or message
+
+    Args:
+        reminder_id: The UUID of the reminder to update
+        new_time: New time in "HH:MM" format (optional)
+        new_message: New reminder message (optional)
+
+    Returns:
+        ReminderOperationResult with success status
+    """
+    deps: AgentDeps = ctx.deps
+
+    try:
+        from src.db.queries import (
+            update_reminder as db_update_reminder,
+            get_reminder_by_id
+        )
+
+        # Validate at least one field to update
+        if new_time is None and new_message is None:
+            return ReminderOperationResult(
+                success=False,
+                message="❌ Please specify what to update (time or message)",
+                reminder_id=reminder_id
+            )
+
+        # Get current reminder
+        reminder = await get_reminder_by_id(reminder_id)
+
+        if not reminder:
+            return ReminderOperationResult(
+                success=False,
+                message=f"❌ Reminder not found: {reminder_id}",
+                reminder_id=reminder_id
+            )
+
+        # Security check
+        if reminder["user_id"] != deps.telegram_id:
+            return ReminderOperationResult(
+                success=False,
+                message="❌ You can only update your own reminders",
+                reminder_id=reminder_id
+            )
+
+        # Update in database
+        updated = await db_update_reminder(
+            reminder_id=reminder_id,
+            user_id=deps.telegram_id,
+            new_time=new_time,
+            new_message=new_message
+        )
+
+        if not updated:
+            return ReminderOperationResult(
+                success=False,
+                message=f"❌ Failed to update reminder {reminder_id}",
+                reminder_id=reminder_id
+            )
+
+        # Reschedule in job queue
+        if deps.reminder_manager:
+            # Cancel old job
+            await deps.reminder_manager.cancel_reminder_by_id(reminder_id)
+
+            # Parse updated schedule
+            updated_schedule = updated["schedule"]
+            if isinstance(updated_schedule, str):
+                updated_schedule = json.loads(updated_schedule)
+
+            # Schedule new job
+            await deps.reminder_manager.schedule_custom_reminder(
+                user_id=deps.telegram_id,
+                reminder_time=updated_schedule.get("time"),
+                message=updated["message"],
+                reminder_type="daily",
+                user_timezone=updated_schedule.get("timezone", "UTC"),
+                reminder_id=reminder_id,
+                days=updated_schedule.get("days", list(range(7)))
+            )
+
+        # Format confirmation
+        changes = []
+        if new_time:
+            changes.append(f"⏰ Time: {new_time}")
+        if new_message:
+            changes.append(f"📝 Message: {new_message}")
+
+        return ReminderOperationResult(
+            success=True,
+            message=(
+                f"✅ Updated reminder:\n\n"
+                + "\n".join(changes)
+            ),
+            reminder_id=reminder_id
+        )
+
+    except Exception as e:
+        logger.error(f"Error updating reminder: {e}", exc_info=True)
+        return ReminderOperationResult(
+            success=False,
+            message=f"❌ Error: {str(e)}",
+            reminder_id=reminder_id
+        )
+
+
+@agent.tool
+async def cleanup_duplicate_reminders(ctx) -> CleanupResult:
+    """
+    Find and remove duplicate reminders for the current user
+
+    Keeps the oldest reminder when duplicates are found (same message, time, timezone).
+
+    Returns:
+        CleanupResult with counts of duplicates found and removed
+    """
+    deps: AgentDeps = ctx.deps
+
+    try:
+        from src.db.queries import (
+            find_duplicate_reminders,
+            deactivate_duplicate_reminders
+        )
+
+        # Find duplicates for this user
+        duplicates = await find_duplicate_reminders(user_id=deps.telegram_id)
+
+        if not duplicates:
+            return CleanupResult(
+                success=True,
+                message="✅ No duplicate reminders found! Your reminders are clean.",
+                checked=0,
+                deactivated=0,
+                groups=0
+            )
+
+        # Deactivate duplicates
+        result = await deactivate_duplicate_reminders(user_id=deps.telegram_id)
+
+        # Cancel jobs for deactivated reminders
+        if deps.reminder_manager:
+            for dup in duplicates:
+                # Get the remove_ids and cancel their jobs
+                remove_ids = dup.get("remove_ids", [])
+                for rid in remove_ids:
+                    await deps.reminder_manager.cancel_reminder_by_id(str(rid))
+
+        # Format result message
+        message = (
+            f"✅ **Cleanup Complete**\n\n"
+            f"📊 Found {result['groups']} groups with duplicates\n"
+            f"🗑️ Removed {result['deactivated']} duplicate reminders\n"
+            f"✅ Kept {result['groups']} original reminders\n\n"
+            f"Your reminders are now clean! "
+            f"You should only receive one notification per reminder."
+        )
+
+        return CleanupResult(
+            success=True,
+            message=message,
+            checked=result["checked"],
+            deactivated=result["deactivated"],
+            groups=result["groups"]
+        )
+
+    except Exception as e:
+        logger.error(f"Error cleaning up duplicates: {e}", exc_info=True)
+        return CleanupResult(
+            success=False,
+            message=f"❌ Error during cleanup: {str(e)}",
+            checked=0,
+            deactivated=0,
+            groups=0
         )
 
 
@@ -2133,6 +2442,9 @@ async def get_agent_response(
         dynamic_agent.tool(get_reminder_statistics)
         dynamic_agent.tool(compare_all_reminders)
         dynamic_agent.tool(suggest_reminder_optimizations)
+        dynamic_agent.tool(delete_reminder)
+        dynamic_agent.tool(update_reminder)
+        dynamic_agent.tool(cleanup_duplicate_reminders)
         dynamic_agent.tool(get_user_achievements_display)
         dynamic_agent.tool(get_daily_food_summary)
         dynamic_agent.tool(remember_visual_pattern)
@@ -2193,6 +2505,9 @@ async def get_agent_response(
                 fallback_agent.tool(get_reminder_statistics)
                 fallback_agent.tool(compare_all_reminders)
                 fallback_agent.tool(suggest_reminder_optimizations)
+                fallback_agent.tool(delete_reminder)
+                fallback_agent.tool(update_reminder)
+                fallback_agent.tool(cleanup_duplicate_reminders)
                 fallback_agent.tool(get_user_achievements_display)
                 fallback_agent.tool(get_daily_food_summary)
                 fallback_agent.tool(remember_visual_pattern)

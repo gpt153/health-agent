@@ -301,6 +301,212 @@ async def get_active_reminders_all() -> list[dict]:
             return await cur.fetchall()
 
 
+async def find_duplicate_reminders(user_id: Optional[str] = None) -> list[dict]:
+    """
+    Find duplicate reminders (same user, message, time, timezone)
+
+    Args:
+        user_id: Optional user filter, or None for all users
+
+    Returns:
+        List of dicts with duplicate info and reminder IDs to keep/remove
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            query = """
+            WITH reminder_groups AS (
+                SELECT
+                    user_id,
+                    message,
+                    schedule->>'time' as time,
+                    schedule->>'timezone' as timezone,
+                    ARRAY_AGG(id ORDER BY created_at ASC) as reminder_ids,
+                    ARRAY_AGG(created_at ORDER BY created_at ASC) as created_dates,
+                    COUNT(*) as count
+                FROM reminders
+                WHERE active = true
+            """
+
+            if user_id:
+                query += " AND user_id = %s"
+                params = (user_id,)
+            else:
+                params = ()
+
+            query += """
+                GROUP BY user_id, message, schedule->>'time', schedule->>'timezone'
+                HAVING COUNT(*) > 1
+            )
+            SELECT
+                user_id,
+                message,
+                time,
+                timezone,
+                reminder_ids[1] as keep_id,
+                reminder_ids[2:] as remove_ids,
+                count as duplicate_count
+            FROM reminder_groups
+            ORDER BY user_id, count DESC
+            """
+
+            await cur.execute(query, params)
+            return await cur.fetchall()
+
+
+async def deactivate_duplicate_reminders(user_id: Optional[str] = None) -> dict:
+    """
+    Deactivate duplicate reminders, keeping the oldest one
+
+    Args:
+        user_id: Optional user filter, or None for all users
+
+    Returns:
+        Dict with counts of reminders checked and deactivated
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Find duplicates
+            duplicates = await find_duplicate_reminders(user_id)
+
+            if not duplicates:
+                return {"checked": 0, "deactivated": 0, "groups": 0}
+
+            # Deactivate all duplicates (except the one to keep)
+            deactivated_count = 0
+            for dup in duplicates:
+                remove_ids = dup["remove_ids"]
+                if remove_ids:
+                    # Convert list to tuple for SQL IN clause
+                    await cur.execute(
+                        """
+                        UPDATE reminders
+                        SET active = false
+                        WHERE id = ANY(%s)
+                        """,
+                        (remove_ids,)
+                    )
+                    deactivated_count += len(remove_ids)
+
+            await conn.commit()
+
+            logger.info(
+                f"Deactivated {deactivated_count} duplicate reminders "
+                f"across {len(duplicates)} groups"
+            )
+
+            return {
+                "checked": sum(d["duplicate_count"] for d in duplicates),
+                "deactivated": deactivated_count,
+                "groups": len(duplicates)
+            }
+
+
+async def delete_reminder(reminder_id: str, user_id: str) -> bool:
+    """
+    Delete (deactivate) a reminder
+
+    Args:
+        reminder_id: UUID of reminder
+        user_id: User ID for security check
+
+    Returns:
+        True if deleted, False if not found or unauthorized
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE reminders
+                SET active = false
+                WHERE id = %s AND user_id = %s AND active = true
+                RETURNING id
+                """,
+                (reminder_id, user_id)
+            )
+            result = await cur.fetchone()
+            await conn.commit()
+
+            if result:
+                logger.info(f"Deleted reminder {reminder_id} for user {user_id}")
+                return True
+            else:
+                logger.warning(f"Reminder {reminder_id} not found for user {user_id}")
+                return False
+
+
+async def update_reminder(
+    reminder_id: str,
+    user_id: str,
+    new_time: Optional[str] = None,
+    new_message: Optional[str] = None,
+    new_timezone: Optional[str] = None,
+    new_days: Optional[list[int]] = None
+) -> Optional[dict]:
+    """
+    Update a reminder's properties
+
+    Args:
+        reminder_id: UUID of reminder
+        user_id: User ID for security check
+        new_time: New time in "HH:MM" format (optional)
+        new_message: New message text (optional)
+        new_timezone: New timezone (optional)
+        new_days: New days list (optional)
+
+    Returns:
+        Updated reminder dict or None if not found
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Get current reminder
+            await cur.execute(
+                """
+                SELECT id, message, schedule
+                FROM reminders
+                WHERE id = %s AND user_id = %s AND active = true
+                """,
+                (reminder_id, user_id)
+            )
+            current = await cur.fetchone()
+
+            if not current:
+                return None
+
+            # Parse current schedule
+            current_schedule = current["schedule"]
+            if isinstance(current_schedule, str):
+                current_schedule = json.loads(current_schedule)
+
+            # Build updated values
+            updated_message = new_message if new_message is not None else current["message"]
+            updated_schedule = current_schedule.copy()
+
+            if new_time is not None:
+                updated_schedule["time"] = new_time
+            if new_timezone is not None:
+                updated_schedule["timezone"] = new_timezone
+            if new_days is not None:
+                updated_schedule["days"] = new_days
+
+            # Update database
+            await cur.execute(
+                """
+                UPDATE reminders
+                SET message = %s, schedule = %s
+                WHERE id = %s AND user_id = %s
+                RETURNING id, message, schedule
+                """,
+                (updated_message, json.dumps(updated_schedule), reminder_id, user_id)
+            )
+            result = await cur.fetchone()
+            await conn.commit()
+
+            if result:
+                logger.info(f"Updated reminder {reminder_id} for user {user_id}")
+                return result
+
+            return None
+
 
 # ==========================================
 # Conversation History Functions
