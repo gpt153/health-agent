@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: health_agent
     ports:
-      - "5432:5432"
+      - "5436:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d
@@ -30,7 +30,8 @@ services:
     env_file:
       - .env
     volumes:
-      - ./data:/app/data
+      - ./production/data:/app/data
+      - ./production/logs:/app/logs
     restart: unless-stopped
 
   health-agent-api:
@@ -49,7 +50,8 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./data:/app/data
+      - ./production/data:/app/data
+      - ./production/logs:/app/logs
     restart: unless-stopped
 
 volumes:
