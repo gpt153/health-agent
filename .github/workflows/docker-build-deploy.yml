@@ -52,19 +52,23 @@ jobs:
           echo "Image pushed: ${{ steps.meta.outputs.tags }}"
           echo "Deployment ready for /home/samuel/odin-health"
 
-  deploy:
-    name: Deploy to Production
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-
-    steps:
-      - name: Deploy to production via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script: |
-            cd /home/samuel/odin-health
-            ./deploy.sh
+  # deploy:
+  #   name: Deploy to Production
+  #   needs: build-and-push
+  #   runs-on: ubuntu-latest
+  #   if: github.ref == 'refs/heads/main'
+  #
+  #   steps:
+  #     - name: Deploy to production via SSH
+  #       uses: appleboy/ssh-action@v1.0.3
+  #       with:
+  #         host: ${{ secrets.DEPLOY_HOST }}
+  #         username: ${{ secrets.DEPLOY_USER }}
+  #         key: ${{ secrets.DEPLOY_SSH_KEY }}
+  #         script: |
+  #           cd /home/samuel/odin-health
+  #           ./deploy.sh
+  #
+  # NOTE: Deployment temporarily disabled - directory /home/samuel/odin-health
+  # doesn't exist on production server and deploy.sh is not in the repo.
+  # Manual deployment: docker compose pull && docker compose up -d
