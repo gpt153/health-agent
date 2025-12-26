@@ -37,6 +37,18 @@ python -m src.main
 2. Send `/start` to begin
 3. Try sending a message or photo!
 
+## 🛠️ Development
+
+For detailed development setup, architecture explanation, and SCAR integration:
+
+**[📖 See DEVELOPMENT.md](DEVELOPMENT.md)**
+
+This covers:
+- Production vs Development modes
+- Native API setup for fast iteration
+- SCAR testing workflow
+- Troubleshooting common issues
+
 ## 📋 Current Features (MVP)
 
 ✅ **Working:**
