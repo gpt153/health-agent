@@ -1,5 +1,16 @@
 version: '3.8'
 
+# Health Agent Docker Compose Configuration
+#
+# Production Setup (always running):
+#   - postgres: Database accessible at localhost:5436
+#   - health-agent-bot: Telegram bot (RUN_MODE=bot)
+#
+# Development Setup (RECOMMENDED):
+#   - Keep postgres + health-agent-bot running
+#   - Run API natively: RUN_MODE=api python -m src.main
+#   - See DEVELOPMENT.md for details
+
 services:
   postgres:
     image: postgres:16
@@ -8,7 +19,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: health_agent
     ports:
-      - "5436:5432"
+      - "5436:5432"  # Host:Container - Use localhost:5436 from native dev environment
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d
@@ -18,6 +29,9 @@ services:
       timeout: 5s
       retries: 5
 
+  # Production Telegram Bot (always running)
+  # Polls Telegram API for user messages
+  # RUN_MODE=bot ensures no conflicts with dev API
   health-agent-bot:
     build: .
     depends_on:
@@ -34,6 +48,9 @@ services:
       - ./production/logs:/app/logs
     restart: unless-stopped
 
+  # Optional: API Server (Docker mode)
+  # For CI/testing only - developers should run natively for hot reload
+  # See DEVELOPMENT.md for native setup instructions
   health-agent-api:
     build: .
     depends_on:
