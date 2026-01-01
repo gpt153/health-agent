@@ -295,7 +295,13 @@ async def quick_start_focus_selection(update: Update, context: ContextTypes.DEFA
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
 
     await update.message.reply_text(message, reply_markup=reply_markup)
-    await update_onboarding_step(user_id, "focus_selection", mark_complete="timezone_setup")
+
+    # Only update step if we're coming from timezone_setup (English timezone path)
+    # If coming from language_selection, step was already updated
+    state = await get_onboarding_state(user_id)
+    current_step = state.get('current_step')
+    if current_step == "timezone_setup":
+        await update_onboarding_step(user_id, "focus_selection", mark_complete="timezone_setup")
 
 
 async def quick_start_feature_demo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -389,7 +395,13 @@ async def full_tour_profile_setup(update: Update, context: ContextTypes.DEFAULT_
     )
 
     await update.message.reply_text(message, reply_markup=ReplyKeyboardRemove())
-    await update_onboarding_step(user_id, "profile_setup", mark_complete="timezone_setup")
+
+    # Only update step if we're coming from timezone_setup (English timezone path)
+    # If coming from language_selection, step was already updated
+    state = await get_onboarding_state(user_id)
+    current_step = state.get('current_step')
+    if current_step == "timezone_setup":
+        await update_onboarding_step(user_id, "profile_setup", mark_complete="timezone_setup")
 
 
 async def full_tour_food_demo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -663,7 +675,10 @@ async def handle_onboarding_message(update: Update, context: ContextTypes.DEFAUL
         # Save language preference in step_data
         step_data = state.get('step_data', {}) if state else {}
         step_data['language'] = language
-        await update_onboarding_step(user_id, None, step_data=step_data, mark_complete="language_selection")
+
+        # Determine next step based on path
+        next_step = "focus_selection" if path == "quick" else "profile_setup"
+        await update_onboarding_step(user_id, next_step, step_data=step_data, mark_complete="language_selection")
 
         # Route to next step based on path
         if path == "quick":
