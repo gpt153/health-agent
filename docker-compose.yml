@@ -42,7 +42,7 @@ services:
       DATA_PATH: /app/data
       RUN_MODE: bot  # bot, api, or both
     env_file:
-      - .env
+      - .env.production
     volumes:
       - ./production/data:/app/data
       - ./production/logs:/app/logs
@@ -63,7 +63,7 @@ services:
       API_HOST: 0.0.0.0
       API_PORT: 8080
     env_file:
-      - .env
+      - .env.production
     ports:
       - "8080:8080"
     volumes:
