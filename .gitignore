@@ -13,9 +13,24 @@ dist/
 
 # Environment
 .env
+.env.production
+.env.local
+.env.*.local
 
 # Data (user privacy)
 data/
+
+# Runtime status files
+DEV_STATUS.md
+PRODUCTION_STATUS.md
+
+# Log files
+*.log
+logs/
+
+# Backup files
+*.bak
+nohup.out
 
 # IDE
 .vscode/
