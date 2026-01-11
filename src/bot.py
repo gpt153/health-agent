@@ -833,18 +833,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Get AI response using PydanticAI agent
     try:
-        # Send typing indicator
-        await update.message.chat.send_action("typing")
+        # Use persistent typing indicator during LLM processing
+        from src.utils.typing_indicator import PersistentTypingIndicator
 
-        # Load conversation history from database (auto-filters unhelpful "I don't know" responses)
-        message_history = await get_conversation_history(user_id, limit=20)
+        async with PersistentTypingIndicator(update.message.chat):
+            # Load conversation history from database (auto-filters unhelpful "I don't know" responses)
+            message_history = await get_conversation_history(user_id, limit=20)
 
-        # Get agent response with conversation history
-        # Pass context.application for approval notifications
-        response = await get_agent_response(
-            user_id, text, memory_manager, reminder_manager, message_history,
-            bot_application=context.application
-        )
+            # Get agent response with conversation history
+            # Pass context.application for approval notifications
+            response = await get_agent_response(
+                user_id, text, memory_manager, reminder_manager, message_history,
+                bot_application=context.application
+            )
 
         # Save user message and assistant response to database
         await save_conversation_message(user_id, "user", text, message_type="text")
@@ -1102,38 +1103,40 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         # Send processing indicator
         await update.message.reply_text("🎤 Transcribing your voice note...")
-        await update.message.chat.send_action("typing")
 
-        # Download voice file
-        voice = update.message.voice
-        file = await voice.get_file()
+        from src.utils.typing_indicator import PersistentTypingIndicator
 
-        # Save voice to temp directory
-        voice_dir = DATA_PATH / user_id / "voice"
-        voice_dir.mkdir(parents=True, exist_ok=True)
+        async with PersistentTypingIndicator(update.message.chat):
+            # Download voice file
+            voice = update.message.voice
+            file = await voice.get_file()
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        voice_path = voice_dir / f"{timestamp}.ogg"
-        await file.download_to_drive(voice_path)
+            # Save voice to temp directory
+            voice_dir = DATA_PATH / user_id / "voice"
+            voice_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"Voice note saved to {voice_path}")
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            voice_path = voice_dir / f"{timestamp}.ogg"
+            await file.download_to_drive(voice_path)
 
-        # Transcribe voice to text
-        transcribed_text = await transcribe_voice(str(voice_path))
-        logger.info(f"Transcribed: {transcribed_text[:100]}...")
+            logger.info(f"Voice note saved to {voice_path}")
 
-        # Log feature usage
-        from src.db.queries import log_feature_usage
-        await log_feature_usage(user_id, "voice_notes")
+            # Transcribe voice to text
+            transcribed_text = await transcribe_voice(str(voice_path))
+            logger.info(f"Transcribed: {transcribed_text[:100]}...")
 
-        # Load conversation history (auto-filters unhelpful "I don't know" responses)
-        message_history = await get_conversation_history(user_id, limit=20)
+            # Log feature usage
+            from src.db.queries import log_feature_usage
+            await log_feature_usage(user_id, "voice_notes")
 
-        # Get AI response using the transcribed text
-        response = await get_agent_response(
-            user_id, transcribed_text, memory_manager, reminder_manager, message_history,
-            bot_application=context.application
-        )
+            # Load conversation history (auto-filters unhelpful "I don't know" responses)
+            message_history = await get_conversation_history(user_id, limit=20)
+
+            # Get AI response using the transcribed text
+            response = await get_agent_response(
+                user_id, transcribed_text, memory_manager, reminder_manager, message_history,
+                bot_application=context.application
+            )
 
         # Save voice message and response to database
         voice_metadata = {
