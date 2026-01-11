@@ -714,6 +714,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text = update.message.text
     logger.info(f"Message from {user_id}: {text[:50]}...")
 
+    # Check for cached response (instant replies for greetings, thanks, etc.)
+    from src.utils.response_cache import response_cache
+    cached_response = response_cache.get_cached_response(text)
+    if cached_response:
+        # Send instant cached response (no LLM needed)
+        await update.message.reply_text(cached_response)
+        logger.info(f"Sent cached response to {user_id}")
+        return
+
     # Check if user is pending activation
     from src.db.queries import get_user_subscription_status, get_onboarding_state
     subscription = await get_user_subscription_status(user_id)
@@ -833,33 +842,52 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Get AI response using PydanticAI agent
     try:
-        # Send typing indicator
-        await update.message.chat.send_action("typing")
+        # Use persistent typing indicator during LLM processing
+        from src.utils.typing_indicator import PersistentTypingIndicator
 
-        # Load conversation history from database (auto-filters unhelpful "I don't know" responses)
-        message_history = await get_conversation_history(user_id, limit=20)
+        async with PersistentTypingIndicator(update.message.chat):
+            # Load conversation history from database (auto-filters unhelpful "I don't know" responses)
+            message_history = await get_conversation_history(user_id, limit=20)
 
-        # Get agent response with conversation history
-        # Pass context.application for approval notifications
-        response = await get_agent_response(
-            user_id, text, memory_manager, reminder_manager, message_history,
-            bot_application=context.application
-        )
+            # Route query to appropriate model (Haiku for simple, Sonnet for complex)
+            from src.utils.query_router import query_router
+            model_choice, routing_reason = query_router.route_query(text)
+
+            # Select model based on routing
+            model_override = None
+            if model_choice == "haiku":
+                model_override = "anthropic:claude-3-5-haiku-latest"
+                logger.info(f"[ROUTER] Using Haiku for fast response: {routing_reason}")
+
+            # Get agent response with conversation history
+            # Pass context.application for approval notifications
+            response = await get_agent_response(
+                user_id, text, memory_manager, reminder_manager, message_history,
+                bot_application=context.application,
+                model_override=model_override
+            )
 
         # Save user message and assistant response to database
         await save_conversation_message(user_id, "user", text, message_type="text")
         await save_conversation_message(user_id, "assistant", response, message_type="text")
 
-        # Add to Mem0 for semantic memory and automatic fact extraction
-        mem0_manager.add_message(user_id, text, role="user", metadata={"message_type": "text"})
-        mem0_manager.add_message(user_id, response, role="assistant", metadata={"message_type": "text"})
+        # Move Mem0 and auto-save to background tasks (don't block response)
+        async def background_memory_tasks():
+            """Run memory operations in background after response is sent"""
+            # Add to Mem0 for semantic memory and automatic fact extraction
+            mem0_manager.add_message(user_id, text, role="user", metadata={"message_type": "text"})
+            mem0_manager.add_message(user_id, response, role="assistant", metadata={"message_type": "text"})
 
-        # Auto-save: Extract and save any personal information from the conversation
-        logger.info(f"[DEBUG-FLOW] BEFORE auto_save_user_info for user {user_id}")
-        logger.info(f"[DEBUG-FLOW] User message: {text[:100]}")
-        logger.info(f"[DEBUG-FLOW] Agent response: {response[:100]}")
-        await auto_save_user_info(user_id, text, response)
-        logger.info(f"[DEBUG-FLOW] AFTER auto_save_user_info completed successfully")
+            # Auto-save: Extract and save any personal information from the conversation
+            logger.info(f"[DEBUG-FLOW] BEFORE auto_save_user_info for user {user_id}")
+            logger.info(f"[DEBUG-FLOW] User message: {text[:100]}")
+            logger.info(f"[DEBUG-FLOW] Agent response: {response[:100]}")
+            await auto_save_user_info(user_id, text, response)
+            logger.info(f"[DEBUG-FLOW] AFTER auto_save_user_info completed successfully")
+
+        # Schedule background task (fire and forget)
+        import asyncio
+        asyncio.create_task(background_memory_tasks())
 
         # Send response - try with Markdown first, fallback to plain text if parsing fails
         try:
@@ -1102,38 +1130,40 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         # Send processing indicator
         await update.message.reply_text("🎤 Transcribing your voice note...")
-        await update.message.chat.send_action("typing")
 
-        # Download voice file
-        voice = update.message.voice
-        file = await voice.get_file()
+        from src.utils.typing_indicator import PersistentTypingIndicator
 
-        # Save voice to temp directory
-        voice_dir = DATA_PATH / user_id / "voice"
-        voice_dir.mkdir(parents=True, exist_ok=True)
+        async with PersistentTypingIndicator(update.message.chat):
+            # Download voice file
+            voice = update.message.voice
+            file = await voice.get_file()
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        voice_path = voice_dir / f"{timestamp}.ogg"
-        await file.download_to_drive(voice_path)
+            # Save voice to temp directory
+            voice_dir = DATA_PATH / user_id / "voice"
+            voice_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"Voice note saved to {voice_path}")
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            voice_path = voice_dir / f"{timestamp}.ogg"
+            await file.download_to_drive(voice_path)
 
-        # Transcribe voice to text
-        transcribed_text = await transcribe_voice(str(voice_path))
-        logger.info(f"Transcribed: {transcribed_text[:100]}...")
+            logger.info(f"Voice note saved to {voice_path}")
 
-        # Log feature usage
-        from src.db.queries import log_feature_usage
-        await log_feature_usage(user_id, "voice_notes")
+            # Transcribe voice to text
+            transcribed_text = await transcribe_voice(str(voice_path))
+            logger.info(f"Transcribed: {transcribed_text[:100]}...")
 
-        # Load conversation history (auto-filters unhelpful "I don't know" responses)
-        message_history = await get_conversation_history(user_id, limit=20)
+            # Log feature usage
+            from src.db.queries import log_feature_usage
+            await log_feature_usage(user_id, "voice_notes")
 
-        # Get AI response using the transcribed text
-        response = await get_agent_response(
-            user_id, transcribed_text, memory_manager, reminder_manager, message_history,
-            bot_application=context.application
-        )
+            # Load conversation history (auto-filters unhelpful "I don't know" responses)
+            message_history = await get_conversation_history(user_id, limit=20)
+
+            # Get AI response using the transcribed text
+            response = await get_agent_response(
+                user_id, transcribed_text, memory_manager, reminder_manager, message_history,
+                bot_application=context.application
+            )
 
         # Save voice message and response to database
         voice_metadata = {
@@ -1145,8 +1175,14 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         await save_conversation_message(user_id, "assistant", response, message_type="text")
 
-        # Auto-save: Extract and save any personal information
-        await auto_save_user_info(user_id, transcribed_text, response)
+        # Move auto-save to background task (don't block response)
+        async def background_voice_memory_tasks():
+            """Run memory operations in background after response is sent"""
+            await auto_save_user_info(user_id, transcribed_text, response)
+
+        # Schedule background task (fire and forget)
+        import asyncio
+        asyncio.create_task(background_voice_memory_tasks())
 
         # Send transcription and response
         await update.message.reply_text(
