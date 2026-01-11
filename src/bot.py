@@ -851,16 +851,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await save_conversation_message(user_id, "user", text, message_type="text")
         await save_conversation_message(user_id, "assistant", response, message_type="text")
 
-        # Add to Mem0 for semantic memory and automatic fact extraction
-        mem0_manager.add_message(user_id, text, role="user", metadata={"message_type": "text"})
-        mem0_manager.add_message(user_id, response, role="assistant", metadata={"message_type": "text"})
+        # Move Mem0 and auto-save to background tasks (don't block response)
+        async def background_memory_tasks():
+            """Run memory operations in background after response is sent"""
+            # Add to Mem0 for semantic memory and automatic fact extraction
+            mem0_manager.add_message(user_id, text, role="user", metadata={"message_type": "text"})
+            mem0_manager.add_message(user_id, response, role="assistant", metadata={"message_type": "text"})
 
-        # Auto-save: Extract and save any personal information from the conversation
-        logger.info(f"[DEBUG-FLOW] BEFORE auto_save_user_info for user {user_id}")
-        logger.info(f"[DEBUG-FLOW] User message: {text[:100]}")
-        logger.info(f"[DEBUG-FLOW] Agent response: {response[:100]}")
-        await auto_save_user_info(user_id, text, response)
-        logger.info(f"[DEBUG-FLOW] AFTER auto_save_user_info completed successfully")
+            # Auto-save: Extract and save any personal information from the conversation
+            logger.info(f"[DEBUG-FLOW] BEFORE auto_save_user_info for user {user_id}")
+            logger.info(f"[DEBUG-FLOW] User message: {text[:100]}")
+            logger.info(f"[DEBUG-FLOW] Agent response: {response[:100]}")
+            await auto_save_user_info(user_id, text, response)
+            logger.info(f"[DEBUG-FLOW] AFTER auto_save_user_info completed successfully")
+
+        # Schedule background task (fire and forget)
+        import asyncio
+        asyncio.create_task(background_memory_tasks())
 
         # Send response - try with Markdown first, fallback to plain text if parsing fails
         try:
@@ -1148,8 +1155,14 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         await save_conversation_message(user_id, "assistant", response, message_type="text")
 
-        # Auto-save: Extract and save any personal information
-        await auto_save_user_info(user_id, transcribed_text, response)
+        # Move auto-save to background task (don't block response)
+        async def background_voice_memory_tasks():
+            """Run memory operations in background after response is sent"""
+            await auto_save_user_info(user_id, transcribed_text, response)
+
+        # Schedule background task (fire and forget)
+        import asyncio
+        asyncio.create_task(background_voice_memory_tasks())
 
         # Send transcription and response
         await update.message.reply_text(
