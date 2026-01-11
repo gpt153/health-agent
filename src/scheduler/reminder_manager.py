@@ -108,7 +108,8 @@ class ReminderManager:
         reminder_type: str = "daily",
         user_timezone: str = "UTC",
         reminder_id: str = None,
-        days: list[int] = None
+        days: list[int] = None,
+        reminder_date: str = None
     ) -> None:
         """
         Schedule a custom reminder
@@ -117,10 +118,11 @@ class ReminderManager:
             user_id: Telegram user ID
             reminder_time: Time in "HH:MM" format (user's local time)
             message: Reminder message to send
-            reminder_type: "daily", "weekly", or "custom"
+            reminder_type: "daily", "weekly", or "once"
             user_timezone: IANA timezone string (e.g., "America/New_York")
             reminder_id: UUID of reminder in database (optional, for completion tracking)
             days: List of weekday integers (0=Monday, 6=Sunday). None = all days.
+            reminder_date: Date string in YYYY-MM-DD format (required for reminder_type="once")
         """
         try:
             # Parse time and apply user's timezone
@@ -128,14 +130,15 @@ class ReminderManager:
 
             # Create timezone-aware time
             tz = ZoneInfo(user_timezone)
-            scheduled_time = time(hour=hour, minute=minute, tzinfo=tz)
-
-            # Default to all days if not specified
-            if days is None:
-                days = list(range(7))
 
             # Schedule based on type
             if reminder_type == "daily":
+                scheduled_time = time(hour=hour, minute=minute, tzinfo=tz)
+
+                # Default to all days if not specified
+                if days is None:
+                    days = list(range(7))
+
                 self.job_queue.run_daily(
                     callback=self._send_custom_reminder,
                     time=scheduled_time,
@@ -149,13 +152,46 @@ class ReminderManager:
                     },
                     name=f"custom_reminder_{reminder_id}",  # Use UUID for uniqueness
                 )
+
+                logger.info(
+                    f"Scheduled {reminder_type} reminder for {user_id} "
+                    f"at {reminder_time} {user_timezone} (days: {days})"
+                )
+
+            elif reminder_type == "once":
+                # Parse date and time into full datetime
+                from datetime import datetime, date
+                reminder_date_obj = date.fromisoformat(reminder_date)
+
+                # Create timezone-aware datetime
+                reminder_datetime = datetime.combine(
+                    reminder_date_obj,
+                    time(hour, minute),
+                    tzinfo=tz
+                )
+
+                # Schedule one-time job
+                self.job_queue.run_once(
+                    callback=self._send_custom_reminder,
+                    when=reminder_datetime,
+                    data={
+                        "user_id": user_id,
+                        "message": message,
+                        "reminder_id": reminder_id,
+                        "scheduled_time": reminder_time,
+                        "timezone": user_timezone,
+                        "days": None  # Not applicable for one-time reminders
+                    },
+                    name=f"custom_reminder_{reminder_id}",
+                )
+
+                logger.info(
+                    f"Scheduled one-time reminder for {user_id} "
+                    f"at {reminder_datetime.isoformat()}"
+                )
+
             else:
                 logger.warning(f"Reminder type {reminder_type} not implemented yet")
-
-            logger.info(
-                f"Scheduled {reminder_type} reminder for {user_id} "
-                f"at {reminder_time} {user_timezone} (days: {days})"
-            )
 
         except Exception as e:
             logger.error(f"Failed to schedule custom reminder: {e}", exc_info=True)

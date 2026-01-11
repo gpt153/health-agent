@@ -493,14 +493,20 @@ async def log_tracking_entry(
 
 @agent.tool
 async def schedule_reminder(
-    ctx, reminder_time: str, message: str
+    ctx, reminder_time: str, message: str, reminder_type: str = "daily", reminder_date: Optional[str] = None
 ) -> ReminderScheduleResult:
     """
-    Schedule a daily reminder at a specific time
+    Schedule a reminder (daily, weekly, or one-time)
 
     Args:
         reminder_time: Time in "HH:MM" format (24-hour, user's local time)
         message: Reminder message to send
+        reminder_type: Type of reminder - "daily" (default), "weekly", or "once"
+        reminder_date: Date for one-time reminders (YYYY-MM-DD format). Required when reminder_type="once"
+
+    Examples:
+        Daily: reminder_type="daily", reminder_time="09:00"
+        One-time: reminder_type="once", reminder_time="15:00", reminder_date="2025-01-15"
 
     Returns:
         ReminderScheduleResult with success status
@@ -516,6 +522,28 @@ async def schedule_reminder(
                 reminder_time=reminder_time,
                 reminder_message=message,
             )
+
+        # Validate parameters based on reminder_type
+        if reminder_type == "once" and not reminder_date:
+            return ReminderScheduleResult(
+                success=False,
+                message="One-time reminders require a date. Please provide reminder_date in YYYY-MM-DD format.",
+                reminder_time=reminder_time,
+                reminder_message=message,
+            )
+
+        # Validate date format if provided
+        if reminder_date:
+            try:
+                from datetime import date
+                date.fromisoformat(reminder_date)
+            except ValueError:
+                return ReminderScheduleResult(
+                    success=False,
+                    message=f"Invalid date format '{reminder_date}'. Please use YYYY-MM-DD format.",
+                    reminder_time=reminder_time,
+                    reminder_message=message,
+                )
 
         # Smart detection: determine if tracking should be enabled
         from src.agent.reminder_utils import should_enable_tracking
@@ -575,12 +603,13 @@ async def schedule_reminder(
         reminder_obj = Reminder(
             id=reminder_id,
             user_id=deps.telegram_id,
-            reminder_type="daily",
+            reminder_type=reminder_type,
             message=message,
             schedule=ReminderSchedule(
-                type="daily",
+                type=reminder_type,
                 time=reminder_time,
-                timezone=user_timezone
+                timezone=user_timezone,
+                date=reminder_date if reminder_type == "once" else None
             ),
             active=True,
             enable_completion_tracking=enable_tracking,
@@ -599,9 +628,10 @@ async def schedule_reminder(
             user_id=deps.telegram_id,
             reminder_time=reminder_time,
             message=message,
-            reminder_type="daily",
+            reminder_type=reminder_type,
             user_timezone=user_timezone,
-            reminder_id=reminder_id
+            reminder_id=reminder_id,
+            reminder_date=reminder_date
         )
 
         # Build response message
@@ -1091,10 +1121,11 @@ async def update_reminder(
                 user_id=deps.telegram_id,
                 reminder_time=updated_schedule.get("time"),
                 message=updated["message"],
-                reminder_type="daily",
+                reminder_type=updated_schedule.get("type", "daily"),
                 user_timezone=updated_schedule.get("timezone", "UTC"),
                 reminder_id=reminder_id,
-                days=updated_schedule.get("days", list(range(7)))
+                days=updated_schedule.get("days", list(range(7))),
+                reminder_date=updated_schedule.get("date")
             )
 
         # Format confirmation

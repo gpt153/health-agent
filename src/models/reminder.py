@@ -10,6 +10,7 @@ class ReminderSchedule(BaseModel):
     time: str  # "21:00"
     timezone: str = "UTC"  # IANA timezone (e.g., "Europe/Stockholm")
     days: list[int] = Field(default_factory=lambda: list(range(7)))  # 0-6
+    date: Optional[str] = None  # YYYY-MM-DD format (required for type="once")
 
 
 class Reminder(BaseModel):
