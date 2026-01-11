@@ -849,11 +849,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Load conversation history from database (auto-filters unhelpful "I don't know" responses)
             message_history = await get_conversation_history(user_id, limit=20)
 
+            # Route query to appropriate model (Haiku for simple, Sonnet for complex)
+            from src.utils.query_router import query_router
+            model_choice, routing_reason = query_router.route_query(text)
+
+            # Select model based on routing
+            model_override = None
+            if model_choice == "haiku":
+                model_override = "anthropic:claude-3-5-haiku-latest"
+                logger.info(f"[ROUTER] Using Haiku for fast response: {routing_reason}")
+
             # Get agent response with conversation history
             # Pass context.application for approval notifications
             response = await get_agent_response(
                 user_id, text, memory_manager, reminder_manager, message_history,
-                bot_application=context.application
+                bot_application=context.application,
+                model_override=model_override
             )
 
         # Save user message and assistant response to database

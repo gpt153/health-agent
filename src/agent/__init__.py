@@ -2580,6 +2580,7 @@ async def get_agent_response(
     reminder_manager=None,
     message_history: list = None,
     bot_application=None,
+    model_override: Optional[str] = None,
 ) -> str:
     """
     Get agent response with dynamic system prompt and tools
@@ -2592,6 +2593,7 @@ async def get_agent_response(
         reminder_manager: Reminder manager instance
         message_history: List of previous messages for context
         bot_application: Telegram bot application for notifications
+        model_override: Optional model to use instead of default (e.g., "anthropic:claude-3-5-haiku-latest")
 
     Returns:
         Agent's response string
@@ -2655,15 +2657,20 @@ async def get_agent_response(
                     )
                 )
 
-    # Try with primary model (Claude) first
+    # Determine which model to use
+    selected_model = model_override if model_override else AGENT_MODEL
+
+    # Try with selected model first
     try:
-        logger.info(f"Attempting with primary model: {AGENT_MODEL}")
+        logger.info(f"Attempting with model: {selected_model}")
+        if model_override:
+            logger.info(f"[ROUTER] Using model override: {model_override}")
         logger.info(f"[SYSTEM_PROMPT_DEBUG] Length: {len(system_prompt)} chars")
         logger.info(f"[SYSTEM_PROMPT_DEBUG] Contains 'Training Schedule': {'Training Schedule' in system_prompt}")
         logger.info(f"[SYSTEM_PROMPT_DEBUG] Contains 'Monday, Tuesday': {'Monday, Tuesday' in system_prompt}")
 
         dynamic_agent = Agent(
-            model=AGENT_MODEL,
+            model=selected_model,
             system_prompt=system_prompt,
             deps_type=AgentDeps,
         )
@@ -2721,7 +2728,7 @@ async def get_agent_response(
         # Check if it's an API overload/availability error
         error_str = str(primary_error).lower()
         if any(keyword in error_str for keyword in ['overload', '529', '503', 'rate_limit', 'unavailable']):
-            logger.warning(f"Primary model ({AGENT_MODEL}) unavailable: {primary_error}")
+            logger.warning(f"Selected model ({selected_model}) unavailable: {primary_error}")
             logger.info("Falling back to OpenAI GPT-4o...")
 
             try:
