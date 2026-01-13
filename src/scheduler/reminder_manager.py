@@ -41,6 +41,7 @@ class ReminderManager:
                 reminder_time = schedule.get("time", "09:00")
                 timezone = schedule.get("timezone", "UTC")
                 days = schedule.get("days", list(range(7)))  # Extract days filter
+                reminder_date = schedule.get("date", None)  # Extract date for one-time reminders
 
                 # Schedule the reminder with reminder_id
                 await self.schedule_custom_reminder(
@@ -50,7 +51,8 @@ class ReminderManager:
                     reminder_type=reminder_type,
                     user_timezone=timezone,
                     reminder_id=reminder_id,
-                    days=days  # Pass days filter
+                    days=days,  # Pass days filter
+                    reminder_date=reminder_date  # Pass date for one-time reminders
                 )
 
                 scheduled_count += 1
