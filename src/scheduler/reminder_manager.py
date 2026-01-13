@@ -298,12 +298,15 @@ class ReminderManager:
 
             # Send quiz trigger message with /sleep_quiz command hint
             message = t('quiz_welcome', lang=language_code)
-            message += "\n\nTap /sleep_quiz to start!"
+            # Add command hint in Swedish/English
+            if language_code == 'sv':
+                message += "\n\nTryck /sleep_quiz för att starta!"
+            else:
+                message += "\n\nTap /sleep_quiz to start!"
 
             await context.bot.send_message(
                 chat_id=user_id,
-                text=message,
-                parse_mode="Markdown"
+                text=message
             )
 
             logger.info(f"Sent automated sleep quiz trigger to {user_id}")

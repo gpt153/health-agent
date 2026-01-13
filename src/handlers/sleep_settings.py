@@ -36,7 +36,7 @@ async def settings_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Create default settings
         lang = get_user_language(update.effective_user)
         # Try to get timezone from user profile
-        user_tz = "UTC"  # Default fallback
+        user_tz = "Europe/Stockholm"  # Default for Swedish users
         try:
             from src.db.queries import get_user_profile
             profile = await get_user_profile(user_id)
