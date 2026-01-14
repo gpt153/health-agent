@@ -659,6 +659,53 @@ async def get_food_entries_by_date(
             return [dict(row) for row in rows]
 
 
+async def has_logged_food_in_window(
+    user_id: str,
+    window_hours: int,
+    meal_type: Optional[str] = None
+) -> bool:
+    """
+    Check if user has logged food within the specified time window
+
+    Args:
+        user_id: Telegram user ID
+        window_hours: How many hours back to check (e.g., 2 means "logged food in last 2 hours")
+        meal_type: Optional meal type filter (e.g., "lunch", "breakfast")
+
+    Returns:
+        True if food was logged within the time window, False otherwise
+    """
+    from datetime import timedelta
+    from src.utils.datetime_helpers import now_utc
+
+    cutoff_time = now_utc() - timedelta(hours=window_hours)
+
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            if meal_type:
+                # Check for specific meal type
+                await cur.execute(
+                    """
+                    SELECT COUNT(*) FROM food_entries
+                    WHERE user_id = %s AND timestamp >= %s AND meal_type = %s
+                    """,
+                    (user_id, cutoff_time, meal_type)
+                )
+            else:
+                # Check for any food log
+                await cur.execute(
+                    """
+                    SELECT COUNT(*) FROM food_entries
+                    WHERE user_id = %s AND timestamp >= %s
+                    """,
+                    (user_id, cutoff_time)
+                )
+
+            row = await cur.fetchone()
+            count = row[0] if row else 0
+            return count > 0
+
+
 # ==========================================
 # Dynamic Tools Functions
 # ==========================================
@@ -1533,6 +1580,41 @@ async def get_reminder_completions(
 
             # Convert rows to list of dicts
             return [dict(zip(columns, row)) for row in rows]
+
+
+async def has_completed_reminder_today(
+    user_id: str,
+    reminder_id: str
+) -> bool:
+    """
+    Check if user has completed a specific reminder today (in user's timezone)
+
+    Args:
+        user_id: Telegram user ID
+        reminder_id: Reminder UUID
+
+    Returns:
+        True if reminder was completed today, False otherwise
+    """
+    from src.utils.datetime_helpers import now_user_timezone
+
+    # Get today's date in user's timezone
+    now = now_user_timezone(user_id)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT COUNT(*) FROM reminder_completions
+                WHERE user_id = %s AND reminder_id = %s AND completed_at >= %s
+                """,
+                (user_id, reminder_id, today_start)
+            )
+
+            row = await cur.fetchone()
+            count = row[0] if row else 0
+            return count > 0
 
 
 # ==========================================
