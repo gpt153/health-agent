@@ -24,3 +24,4 @@ class Reminder(BaseModel):
     tracking_category_id: Optional[UUID] = None  # If tracking_prompt type
     enable_completion_tracking: bool = True  # Whether to show Done button and track completions
     streak_motivation: bool = True  # Whether to show streak count in notifications
+    check_condition: Optional[dict] = None  # Conditional logic for smart reminders (skip if condition met)

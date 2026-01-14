@@ -390,21 +390,51 @@ class ReminderManager:
                     f"Today ({current_weekday}) not in scheduled days {scheduled_days}"
                 )
                 return  # Don't send reminder today
-            # Get reminder from database to check tracking preference
-            from src.db.queries import get_reminder_by_id
+
+            # Get reminder from database to check conditions and tracking preference
+            from src.db.queries import get_reminder_by_id, has_logged_food_in_window, has_completed_reminder_today
 
             enable_tracking = True  # Default
             streak_count = 0
+            reminder_data = None
 
             if reminder_id:
                 reminder_data = await get_reminder_by_id(reminder_id)
-                if reminder_data:
-                    enable_tracking = reminder_data.get("enable_completion_tracking", True)
 
-                    # Calculate current streak if tracking enabled
-                    if enable_tracking:
-                        from src.db.queries import calculate_current_streak
-                        streak_count = await calculate_current_streak(user_id, reminder_id)
+            # Check conditional logic (skip reminder if condition is met)
+            if reminder_data and reminder_data.get("check_condition"):
+                check_condition = reminder_data["check_condition"]
+                condition_type = check_condition.get("type")
+
+                # Check food_logged condition
+                if condition_type == "food_logged":
+                    window_hours = check_condition.get("window_hours", 2)
+                    meal_type = check_condition.get("meal_type")
+
+                    if await has_logged_food_in_window(user_id, window_hours, meal_type):
+                        logger.info(
+                            f"Skipping reminder {reminder_id} for {user_id}: "
+                            f"Food logged within {window_hours}h window"
+                            + (f" (meal_type={meal_type})" if meal_type else "")
+                        )
+                        return
+
+            # Check completion condition (applies to all tracking-enabled reminders)
+            if reminder_id and reminder_data:
+                enable_tracking = reminder_data.get("enable_completion_tracking", True)
+
+                # Check if already completed today
+                if enable_tracking and await has_completed_reminder_today(user_id, reminder_id):
+                    logger.info(
+                        f"Skipping reminder {reminder_id} for {user_id}: "
+                        f"Already marked as Done today"
+                    )
+                    return
+
+                # Calculate current streak if tracking enabled
+                if enable_tracking:
+                    from src.db.queries import calculate_current_streak
+                    streak_count = await calculate_current_streak(user_id, reminder_id)
 
             # Build message text
             reminder_text = f"⏰ **Reminder**\n\n{message}"
