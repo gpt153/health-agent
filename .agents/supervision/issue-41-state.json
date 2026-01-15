@@ -1,0 +1,21 @@
+{
+  "issue_number": 41,
+  "title": "Conditional reminder checks",
+  "phase": "complete",
+  "scar_status": "pr_created",
+  "plan_created_at": "2026-01-14T08:08:57Z",
+  "execution_started_at": "2026-01-14T08:15:06Z",
+  "pr_created_at": "2026-01-14T08:20:36Z",
+  "pr_number": 43,
+  "verification_status": "approved",
+  "last_check": "2026-01-14T08:36:00Z",
+  "plan_location": ".agents/plans/smart-conditional-reminders.md",
+  "feature_branch": "feature-smart-conditional-reminders",
+  "complexity": "medium",
+  "confidence": "9/10",
+  "next_steps": [
+    "Review PR #43",
+    "Merge to main",
+    "Apply migration in production"
+  ]
+}

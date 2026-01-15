@@ -714,15 +714,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text = update.message.text
     logger.info(f"Message from {user_id}: {text[:50]}...")
 
-    # Check for cached response (instant replies for greetings, thanks, etc.)
-    from src.utils.response_cache import response_cache
-    cached_response = response_cache.get_cached_response(text)
-    if cached_response:
-        # Send instant cached response (no LLM needed)
-        await update.message.reply_text(cached_response)
-        logger.info(f"Sent cached response to {user_id}")
-        return
-
     # Check if user is pending activation
     from src.db.queries import get_user_subscription_status, get_onboarding_state
     subscription = await get_user_subscription_status(user_id)
