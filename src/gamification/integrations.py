@@ -15,7 +15,7 @@ Usage:
 
 import logging
 from datetime import datetime, date
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TypedDict, Any
 
 from src.gamification import (
     award_xp,
@@ -30,12 +30,24 @@ from src.gamification.motivation_profiles import (
 logger = logging.getLogger(__name__)
 
 
+# TypedDict for gamification results
+class GamificationResult(TypedDict):
+    """Result of gamification processing"""
+    xp_awarded: int
+    level_up: bool
+    new_level: int
+    streak_updated: bool
+    current_streak: int
+    achievements_unlocked: List[Dict[str, Any]]
+    message: str
+
+
 async def handle_reminder_completion_gamification(
     user_id: str,
     reminder_id: str,
     completed_at: datetime,
     scheduled_time: str
-) -> Dict:
+) -> GamificationResult:
     """
     Handle gamification for reminder completion
 
@@ -256,7 +268,7 @@ async def handle_food_entry_gamification(
     food_entry_id: str,
     logged_at: datetime,
     meal_type: str
-) -> Dict:
+) -> GamificationResult:
     """
     Handle gamification for food logging
 
@@ -367,7 +379,7 @@ async def handle_sleep_quiz_gamification(
     user_id: str,
     sleep_entry_id: str,
     logged_at: datetime
-) -> Dict:
+) -> GamificationResult:
     """
     Handle gamification for sleep quiz completion
 
@@ -475,7 +487,7 @@ async def handle_tracking_entry_gamification(
     tracking_entry_id: str,
     category_name: str,
     logged_at: datetime
-) -> Dict:
+) -> GamificationResult:
     """
     Handle gamification for custom tracking entries
 

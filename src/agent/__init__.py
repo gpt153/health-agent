@@ -2,7 +2,7 @@
 import logging
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from uuid import uuid4
 from datetime import datetime
 
@@ -46,8 +46,8 @@ class AgentDeps:
 
     telegram_id: str
     memory_manager: MemoryFileManager
-    user_memory: dict  # Loaded from markdown files
-    reminder_manager: object = None  # ReminderManager instance (optional)
+    user_memory: Dict[str, str]  # Loaded from markdown files
+    reminder_manager: Optional[Any] = None  # ReminderManager instance (optional)
     bot_application: object = None  # Telegram bot application for notifications (optional)
 
 
@@ -2626,9 +2626,9 @@ async def get_agent_response(
     telegram_id: str,
     user_message: str,
     memory_manager: MemoryFileManager,
-    reminder_manager=None,
-    message_history: list = None,
-    bot_application=None,
+    reminder_manager: Optional[Any] = None,
+    message_history: Optional[List[Dict[str, Any]]] = None,
+    bot_application: Optional[Any] = None,
     model_override: Optional[str] = None,
 ) -> str:
     """

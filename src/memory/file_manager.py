@@ -7,6 +7,7 @@ MEMORY ARCHITECTURE:
 """
 import logging
 from pathlib import Path
+from typing import Dict, TypedDict
 from src.config import DATA_PATH
 from src.memory.templates import (
     PROFILE_TEMPLATE,
@@ -14,6 +15,12 @@ from src.memory.templates import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class UserMemory(TypedDict):
+    """Type definition for user memory data"""
+    profile: str
+    preferences: str
 
 
 class MemoryFileManager:
@@ -59,7 +66,7 @@ class MemoryFileManager:
         filepath.write_text(content)
         logger.info(f"Updated {filename} for user {telegram_id}")
 
-    async def load_user_memory(self, telegram_id: str) -> dict:
+    async def load_user_memory(self, telegram_id: str) -> UserMemory:
         """Load all memory files for user
 
         Only loads profile and preferences from markdown files.

@@ -1,9 +1,9 @@
 """Database queries"""
 import json
 import logging
-from typing import Optional
+from typing import Optional, Dict, List, Any, TypedDict
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, date
 from src.db.connection import db
 from src.models.user import UserProfile
 from src.models.food import FoodEntry
@@ -13,6 +13,84 @@ from src.models.sleep import SleepEntry
 from src.models.sleep_settings import SleepQuizSettings, SleepQuizSubmission
 
 logger = logging.getLogger(__name__)
+
+
+# TypedDict classes for complex return types
+class FoodEntryDict(TypedDict, total=False):
+    """Type definition for food entry database record"""
+    id: str
+    user_id: str
+    timestamp: datetime
+    photo_path: Optional[str]
+    foods: List[Dict[str, Any]]
+    total_calories: int
+    total_macros: Dict[str, float]
+    meal_type: Optional[str]
+    notes: Optional[str]
+
+
+class UpdateFoodEntryResult(TypedDict, total=False):
+    """Result of updating a food entry"""
+    success: bool
+    old_values: Dict[str, Any]
+    new_values: Dict[str, Any]
+    entry_id: str
+    correction_note: Optional[str]
+    error: str
+
+
+class ConversationMessage(TypedDict):
+    """Type definition for conversation history message"""
+    role: str
+    content: str
+    message_type: str
+    metadata: Optional[Dict[str, Any]]
+    timestamp: datetime
+
+
+class PendingApprovalDict(TypedDict):
+    """Type definition for pending tool approval"""
+    approval_id: str
+    tool_id: str
+    requested_by: str
+    request_message: str
+    created_at: datetime
+    tool_name: str
+    tool_type: str
+    description: str
+
+
+class InviteCodeDict(TypedDict):
+    """Type definition for invite code"""
+    id: str
+    code: str
+    max_uses: int
+    uses_count: int
+    tier: str
+    trial_days: int
+    expires_at: Optional[datetime]
+    active: bool
+    is_master_code: bool
+    description: Optional[str]
+
+
+class SubscriptionStatusDict(TypedDict, total=False):
+    """Type definition for user subscription status"""
+    tier: str
+    trial_ends_at: Optional[datetime]
+    subscription_ends_at: Optional[datetime]
+    is_trial: bool
+    is_active: bool
+
+
+class OnboardingStateDict(TypedDict, total=False):
+    """Type definition for onboarding state"""
+    user_id: str
+    onboarding_path: str
+    current_step: str
+    step_data: Dict[str, Any]
+    completed_at: Optional[datetime]
+    created_at: datetime
 
 
 # User operations
@@ -69,11 +147,11 @@ async def update_food_entry(
     entry_id: str,
     user_id: str,
     total_calories: Optional[int] = None,
-    total_macros: Optional[dict] = None,
-    foods: Optional[list] = None,
+    total_macros: Optional[Dict[str, float]] = None,
+    foods: Optional[List[Dict[str, Any]]] = None,
     correction_note: Optional[str] = None,
     corrected_by: str = "user"
-) -> dict:
+) -> UpdateFoodEntryResult:
     """
     Update an existing food entry with corrections
 
@@ -185,7 +263,7 @@ async def update_food_entry(
             }
 
 
-async def get_recent_food_entries(user_id: str, limit: int = 10) -> list[dict]:
+async def get_recent_food_entries(user_id: str, limit: int = 10) -> List[FoodEntryDict]:
     """Get recent food entries for user"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -224,7 +302,7 @@ async def create_tracking_category(category: TrackingCategory) -> None:
     logger.info(f"Created tracking category: {category.name} for user {category.user_id}")
 
 
-async def get_tracking_categories(user_id: str, active_only: bool = True) -> list[dict]:
+async def get_tracking_categories(user_id: str, active_only: bool = True) -> List[Dict[str, Any]]:
     """Get tracking categories for user"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -280,7 +358,7 @@ async def create_reminder(reminder: Reminder) -> None:
     logger.info(f"Created reminder for user {reminder.user_id}")
 
 
-async def get_active_reminders(user_id: str) -> list[dict]:
+async def get_active_reminders(user_id: str) -> List[Dict[str, Any]]:
     """Get active reminders for user"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -291,7 +369,7 @@ async def get_active_reminders(user_id: str) -> list[dict]:
             return await cur.fetchall()
 
 
-async def get_active_reminders_all() -> list[dict]:
+async def get_active_reminders_all() -> List[Dict[str, Any]]:
     """Get all active reminders for all users"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -301,7 +379,7 @@ async def get_active_reminders_all() -> list[dict]:
             return await cur.fetchall()
 
 
-async def find_duplicate_reminders(user_id: Optional[str] = None) -> list[dict]:
+async def find_duplicate_reminders(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Find duplicate reminders (same user, message, time, timezone)
 
@@ -544,14 +622,14 @@ async def save_conversation_message(
 async def get_conversation_history(
     user_id: str,
     limit: int = 20
-) -> list[dict]:
+) -> List[ConversationMessage]:
     """
     Get recent conversation history for a user
-    
+
     Args:
         user_id: Telegram user ID
         limit: Maximum number of messages to retrieve (default: 20 = 10 turns)
-        
+
     Returns:
         List of messages in format: [{"role": "user", "content": "..."}]
     """
@@ -776,7 +854,7 @@ async def save_dynamic_tool(
     return tool_id
 
 
-async def get_all_enabled_tools() -> list[dict]:
+async def get_all_enabled_tools() -> List[Dict[str, Any]]:
     """Get all enabled dynamic tools"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -1003,7 +1081,7 @@ async def reject_tool(
     logger.info(f"Rejected tool creation request {approval_id}")
 
 
-async def get_pending_approvals() -> list[dict]:
+async def get_pending_approvals() -> List[PendingApprovalDict]:
     """Get all pending tool approval requests"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -1060,7 +1138,7 @@ async def create_invite_code(
             return str(result['id'])
 
 
-async def validate_invite_code(code: str) -> Optional[dict]:
+async def validate_invite_code(code: str) -> Optional[InviteCodeDict]:
     """
     Validate an invite code and return its details if valid
     Returns None if code is invalid, expired, or used up
@@ -1184,7 +1262,7 @@ async def use_invite_code(code: str, telegram_id: str) -> bool:
             return True
 
 
-async def get_user_subscription_status(telegram_id: str) -> Optional[dict]:
+async def get_user_subscription_status(telegram_id: str) -> Optional[SubscriptionStatusDict]:
     """Get user's subscription status"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -1214,7 +1292,7 @@ async def get_user_subscription_status(telegram_id: str) -> Optional[dict]:
             }
 
 
-async def get_master_codes() -> list:
+async def get_master_codes() -> List[InviteCodeDict]:
     """Get all active master codes"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -1263,7 +1341,7 @@ async def deactivate_invite_code(code: str) -> bool:
 # Onboarding State Management
 # ==========================================
 
-async def get_onboarding_state(user_id: str) -> Optional[dict]:
+async def get_onboarding_state(user_id: str) -> Optional[OnboardingStateDict]:
     """Get current onboarding state for user"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -1454,7 +1532,7 @@ async def save_sleep_entry(entry: SleepEntry) -> None:
     logger.info(f"Saved sleep entry for user {entry.user_id}")
 
 
-async def get_sleep_entries(user_id: str, days: int = 7) -> list[dict]:
+async def get_sleep_entries(user_id: str, days: int = 7) -> List[Dict[str, Any]]:
     """Get recent sleep entries for user"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -2504,7 +2582,7 @@ async def check_missed_reminder_grace_period(user_id: str, reminder_id: str, sch
 # Phase 4: Gamification Functions
 # ========================================
 
-async def get_all_achievements() -> list[dict]:
+async def get_all_achievements() -> List[Dict[str, Any]]:
     """Get all achievement definitions"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -2538,7 +2616,7 @@ async def get_all_achievements() -> list[dict]:
             return achievements
 
 
-async def get_user_achievements(user_id: str) -> list[dict]:
+async def get_user_achievements(user_id: str) -> List[Dict[str, Any]]:
     """Get all achievements unlocked by user"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -3030,7 +3108,7 @@ async def get_all_user_streaks(user_id: str) -> list[dict]:
 
 
 # Achievement Functions
-async def get_all_achievements() -> list[dict]:
+async def get_all_achievements() -> List[Dict[str, Any]]:
     """
     Get all achievement definitions
 
@@ -3158,7 +3236,7 @@ async def has_user_unlocked_achievement(user_id: str, achievement_id: str) -> bo
 
 
 # Aliases for consistency with old mock_store API
-async def get_user_achievements(user_id: str) -> list[dict]:
+async def get_user_achievements(user_id: str) -> List[Dict[str, Any]]:
     """Alias for get_user_achievement_unlocks"""
     return await get_user_achievement_unlocks(user_id)
 
@@ -3192,7 +3270,7 @@ async def get_user_xp_level(user_id: str) -> dict:
     }
 
 
-async def get_user_streaks(user_id: str) -> list[dict]:
+async def get_user_streaks(user_id: str) -> List[Dict[str, Any]]:
     """
     Wrapper for API compatibility - alias to get_all_user_streaks
 
