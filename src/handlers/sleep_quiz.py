@@ -6,6 +6,7 @@ from telegram.ext import (
     ConversationHandler, CommandHandler, CallbackQueryHandler, ContextTypes
 )
 from src.db.queries import save_sleep_entry, get_sleep_entries, log_feature_usage
+from src.db.queries import user_exists, create_user
 from src.models.sleep import SleepEntry
 from src.utils.auth import is_authorized
 from src.i18n.translations import t, get_user_language
@@ -28,6 +29,13 @@ async def start_sleep_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # Check authorization
     if not await is_authorized(user_id):
         return ConversationHandler.END
+
+    # Ensure user exists in database (required for foreign key constraints)
+    if not await user_exists(user_id):
+        from src.memory.file_manager import memory_manager
+        await create_user(user_id)
+        await memory_manager.create_user_files(user_id)
+        logger.info(f"Auto-created user {user_id} for sleep quiz")
 
     # Detect user's language
     lang = get_user_language(update.effective_user)
