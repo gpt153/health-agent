@@ -1057,7 +1057,7 @@ async def create_invite_code(
             else:
                 logger.info(f"Created invite code: {code}")
 
-            return str(result[0])
+            return str(result['id'])
 
 
 async def validate_invite_code(code: str) -> Optional[dict]:
@@ -2893,7 +2893,7 @@ async def add_xp_transaction(
             )
             result = await cur.fetchone()
             await conn.commit()
-            return str(result[0]) if result else None
+            return str(result['id']) if result else None
 
 
 async def get_xp_transactions(user_id: str, limit: int = 50) -> list[dict]:
@@ -3154,7 +3154,7 @@ async def has_user_unlocked_achievement(user_id: str, achievement_id: str) -> bo
                 (user_id, achievement_id)
             )
             result = await cur.fetchone()
-            return result[0] > 0 if result else False
+            return result['count'] > 0 if result else False
 
 
 # Aliases for consistency with old mock_store API
