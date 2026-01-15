@@ -1,0 +1,14 @@
+{
+  "issue": 36,
+  "title": "Bug: Agent cannot create one-time reminders",
+  "status": "monitoring",
+  "scar_started": true,
+  "scar_acknowledged_at": "2026-01-11T21:34:11Z",
+  "command": "/rca 36",
+  "last_activity": "2026-01-11T21:34:11Z",
+  "last_comment": "SCAR is on the case...",
+  "progress_estimate": "0%",
+  "retries": 0,
+  "errors": [],
+  "monitoring_started": "2026-01-11T21:34:31Z"
+}
