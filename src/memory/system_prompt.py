@@ -5,11 +5,75 @@ from src.memory.mem0_manager import mem0_manager
 logger = logging.getLogger(__name__)
 
 
+def _format_habits(habits: list) -> str:
+    """
+    Format user habits for injection into system prompt
+
+    Args:
+        habits: List of habit dictionaries
+
+    Returns:
+        Formatted habits string
+    """
+    if not habits:
+        return "No established habits yet"
+
+    formatted = "**YOUR LEARNED HABITS (automatically detected):**\n\n"
+    formatted += "These are patterns the system has learned from your behavior. Apply them automatically when relevant.\n\n"
+
+    for habit in habits:
+        habit_type = habit['habit_type']
+        habit_key = habit['habit_key']
+        habit_data = habit['habit_data']
+        confidence = habit['confidence']
+        count = habit['occurrence_count']
+
+        # Format based on habit type
+        if habit_type == "food_prep":
+            food = habit_data.get('food', 'unknown')
+            ratio = habit_data.get('ratio', '')
+            liquid = habit_data.get('liquid', '')
+            portions_per_dl = habit_data.get('portions_per_dl', '')
+
+            formatted += f"- **{food}**: Always prepared with {liquid.replace('_', ' ')} ({ratio} ratio)\n"
+            if portions_per_dl:
+                formatted += f"  • Portions per dl: {portions_per_dl}\n"
+            formatted += f"  • Confidence: {confidence:.0%} (observed {count} times)\n"
+            formatted += f"  • **Auto-apply**: When user mentions \"{food}\", automatically calculate with {liquid.replace('_', ' ')}\n\n"
+
+        elif habit_type == "timing":
+            activity = habit_data.get('activity', 'activity')
+            usual_time = habit_data.get('usual_time', '')
+            days = habit_data.get('days', [])
+
+            formatted += f"- **{activity.capitalize()} timing**: Usually at {usual_time}\n"
+            if days:
+                formatted += f"  • Days: {', '.join(days)}\n"
+            formatted += f"  • Confidence: {confidence:.0%} (observed {count} times)\n\n"
+
+        elif habit_type == "routine":
+            sequence = habit_data.get('sequence', [])
+            duration = habit_data.get('typical_duration', '')
+
+            formatted += f"- **Routine**: {' → '.join(sequence)}\n"
+            if duration:
+                formatted += f"  • Typical duration: {duration} minutes\n"
+            formatted += f"  • Confidence: {confidence:.0%} (observed {count} times)\n\n"
+
+        elif habit_type == "preference":
+            for key, value in habit_data.items():
+                formatted += f"- **{key.replace('_', ' ').title()}**: {value}\n"
+            formatted += f"  • Confidence: {confidence:.0%} (observed {count} times)\n\n"
+
+    return formatted
+
+
 def generate_system_prompt(
     user_memory: dict,
     user_id: str = None,
     current_query: str = None,
-    preloaded_memories: list = None
+    preloaded_memories: list = None,
+    user_habits: list = None
 ) -> str:
     """
     Generate personalized system prompt based on user memory
@@ -19,6 +83,7 @@ def generate_system_prompt(
         user_id: User ID (deprecated - use preloaded_memories instead)
         current_query: Current query (deprecated - use preloaded_memories instead)
         preloaded_memories: Pre-loaded Mem0 search results (preferred for performance)
+        user_habits: Pre-loaded user habits for automatic pattern application (optional)
 
     Returns:
         Personalized system prompt string
@@ -186,6 +251,10 @@ Transparency builds trust!
 <semantic_memories>
 {mem0_context if mem0_context else "No additional memories found"}
 </semantic_memories>
+
+<learned_habits>
+{_format_habits(user_habits) if user_habits else "No established habits yet"}
+</learned_habits>
 </user_context>
 
 <critical_instruction>
