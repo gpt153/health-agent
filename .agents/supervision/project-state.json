@@ -1,19 +1,28 @@
 {
   "status": "active",
   "started": "2026-01-15T09:39:00Z",
-  "last_update": "2026-01-15T09:39:00Z",
+  "last_update": "2026-01-15T10:42:22Z",
   "session_id": "session-1768469940",
-  "phase": "wave_1_starting",
+  "phase": "wave_2_starting",
   "active_issues": [
+    47,
+    48
+  ],
+  "completed_issues": [
     46
   ],
-  "completed_issues": [],
   "pending_issues": [
     47,
     48,
     49
   ],
-  "monitors": {},
+  "monitors": {
+    "46": {
+      "status": "merged",
+      "merged_at": "2026-01-15T10:42:01Z",
+      "pr_number": 50
+    }
+  },
   "context_usage": 0,
   "ui_deployments": {}
 }
