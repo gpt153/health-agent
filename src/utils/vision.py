@@ -14,16 +14,22 @@ async def analyze_food_photo(
     photo_path: str,
     caption: Optional[str] = None,
     user_id: Optional[str] = None,
-    visual_patterns: Optional[str] = None
+    visual_patterns: Optional[str] = None,
+    semantic_context: Optional[str] = None,
+    food_history: Optional[str] = None,
+    food_habits: Optional[str] = None
 ) -> VisionAnalysisResult:
     """
-    Analyze food photo using vision AI
+    Analyze food photo using vision AI with enhanced personalization
 
     Args:
         photo_path: Path to the food photo
         caption: Optional caption provided by user
         user_id: User's ID for loading visual patterns
         visual_patterns: Pre-loaded visual patterns (optional, for performance)
+        semantic_context: Relevant memories from Mem0 semantic search
+        food_history: Recent food logging patterns
+        food_habits: User's established food preparation habits
 
     Returns:
         VisionAnalysisResult with identified foods
@@ -38,9 +44,15 @@ async def analyze_food_photo(
 
     # Route to appropriate vision API
     if VISION_MODEL.startswith("openai:"):
-        return await analyze_with_openai(image_data, photo_path, caption, visual_patterns)
+        return await analyze_with_openai(
+            image_data, photo_path, caption, visual_patterns,
+            semantic_context, food_history, food_habits
+        )
     elif VISION_MODEL.startswith("anthropic:"):
-        return await analyze_with_anthropic(image_data, photo_path, caption, visual_patterns)
+        return await analyze_with_anthropic(
+            image_data, photo_path, caption, visual_patterns,
+            semantic_context, food_history, food_habits
+        )
     else:
         logger.error(f"Unknown vision model: {VISION_MODEL}")
         # Fallback to mock data
@@ -51,7 +63,10 @@ async def analyze_with_openai(
     image_data: str,
     photo_path: str,
     caption: Optional[str] = None,
-    visual_patterns: Optional[str] = None
+    visual_patterns: Optional[str] = None,
+    semantic_context: Optional[str] = None,
+    food_history: Optional[str] = None,
+    food_habits: Optional[str] = None
 ) -> VisionAnalysisResult:
     """Use OpenAI Vision API (GPT-4o-mini)"""
     try:
@@ -117,6 +132,16 @@ Be specific about portion sizes and provide nutritional estimates."""
 
         if visual_patterns:
             prompt_text += f"\n\nUser's known food patterns:\n{visual_patterns}\nCheck if this matches any known items."
+
+        # Add enhanced context for personalization
+        if semantic_context:
+            prompt_text += f"\n{semantic_context}"
+
+        if food_history:
+            prompt_text += f"\n{food_history}"
+
+        if food_habits:
+            prompt_text += f"\n{food_habits}\nAuto-apply these habits when recognizing matching foods."
 
         # Prepare vision prompt
         response = await client.chat.completions.create(
@@ -195,7 +220,10 @@ async def analyze_with_anthropic(
     image_data: str,
     photo_path: str,
     caption: Optional[str] = None,
-    visual_patterns: Optional[str] = None
+    visual_patterns: Optional[str] = None,
+    semantic_context: Optional[str] = None,
+    food_history: Optional[str] = None,
+    food_habits: Optional[str] = None
 ) -> VisionAnalysisResult:
     """Use Anthropic Claude 3.5 Sonnet Vision"""
     try:
@@ -261,6 +289,16 @@ Be specific about portion sizes and provide nutritional estimates."""
 
         if visual_patterns:
             prompt_text += f"\n\nUser's known food patterns:\n{visual_patterns}\nCheck if this matches any known items."
+
+        # Add enhanced context for personalization
+        if semantic_context:
+            prompt_text += f"\n{semantic_context}"
+
+        if food_history:
+            prompt_text += f"\n{food_history}"
+
+        if food_habits:
+            prompt_text += f"\n{food_habits}\nAuto-apply these habits when recognizing matching foods."
 
         # Prepare vision prompt
         response = await client.messages.create(
