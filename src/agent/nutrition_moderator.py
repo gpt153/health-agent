@@ -227,9 +227,9 @@ def _build_reasoning(
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
 
-    print("\n" + "="*60)
-    print("MODERATOR SYNTHESIS TEST")
-    print("="*60)
+    logger.info("\n" + "="*60)
+    logger.info("MODERATOR SYNTHESIS TEST")
+    logger.info("="*60)
 
     # Test case: Small salad with high variance
     agents = [
@@ -273,13 +273,13 @@ if __name__ == "__main__":
 
     result = synthesize_consensus(agents, debate_log, comparison)
 
-    print("\nSynthesis Result:")
-    print(f"  Calories: {result['calories']} kcal")
-    print(f"  Macros: P:{result['macros']['protein']}g C:{result['macros']['carbs']}g F:{result['macros']['fat']}g")
-    print(f"  Confidence: {result['confidence']:.1%}")
-    print(f"  Source: {result['source']}")
-    print(f"\n  Reasoning:\n  {result['reasoning']}")
+    logger.info("\nSynthesis Result:")
+    logger.info(f"  Calories: {result['calories']} kcal")
+    logger.info(f"  Macros: P:{result['macros']['protein']}g C:{result['macros']['carbs']}g F:{result['macros']['fat']}g")
+    logger.info(f"  Confidence: {result['confidence']:.1%}")
+    logger.info(f"  Source: {result['source']}")
+    logger.info(f"\n  Reasoning:\n  {result['reasoning']}")
 
-    print("\n" + "="*60)
-    print("TEST COMPLETE")
-    print("="*60)
+    logger.info("\n" + "="*60)
+    logger.info("TEST COMPLETE")
+    logger.info("="*60)
