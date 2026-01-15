@@ -1597,6 +1597,24 @@ async def log_food_from_text_validated(
         await save_food_entry(entry)
         logger.info(f"Saved validated text food entry for {deps.telegram_id}")
 
+        # Trigger habit detection for food patterns
+        from src.memory.habit_extractor import habit_extractor
+        try:
+            for food_item in entry.foods:
+                parsed_components = {
+                    "food": food_item.food_name,
+                    "quantity": f"{food_item.quantity} {food_item.unit}",
+                    "preparation": food_description  # Original description
+                }
+                await habit_extractor.detect_food_prep_habit(
+                    deps.telegram_id,
+                    food_item.food_name,
+                    parsed_components
+                )
+        except Exception as e:
+            logger.warning(f"[HABITS] Failed to detect habits: {e}")
+            # Continue - habit detection shouldn't block food logging
+
         # Step 5: Format response with validation info
         foods_list = [
             {
@@ -2662,8 +2680,27 @@ async def get_agent_response(
         enhanced_message = f"{timestamp_info}\n\n{user_message}\n\n{direct_answer}"
         logger.info(f"[DIRECT_ANSWER] Injected answer into query")
 
-    # Generate dynamic system prompt with Mem0 semantic search
-    system_prompt = generate_system_prompt(user_memory, user_id=telegram_id, current_query=enhanced_message)
+    # Load user habits for automatic pattern application
+    from src.memory.habit_extractor import habit_extractor
+    user_habits = []
+    try:
+        user_habits = await habit_extractor.get_user_habits(
+            telegram_id,
+            min_confidence=0.6  # Only high-confidence habits (60%+)
+        )
+        if user_habits:
+            logger.info(f"[HABITS] Loaded {len(user_habits)} established habits")
+    except Exception as e:
+        logger.warning(f"[HABITS] Failed to load habits: {e}")
+        # Continue without habits - not critical
+
+    # Generate dynamic system prompt with Mem0 semantic search and learned habits
+    system_prompt = generate_system_prompt(
+        user_memory,
+        user_id=telegram_id,
+        current_query=enhanced_message,
+        user_habits=user_habits
+    )
 
     # Create dependencies
     deps = AgentDeps(
