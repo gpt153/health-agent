@@ -114,7 +114,8 @@ def generate_system_prompt(
 
     try:
         user_tz = pytz.timezone(user_timezone_str)
-    except:
+    except pytz.exceptions.UnknownTimeZoneError as e:
+        logger.warning(f"Invalid timezone '{user_timezone_str}' in user profile, falling back to Europe/Stockholm: {e}")
         user_tz = pytz.timezone('Europe/Stockholm')
 
     # Get current time in both UTC and user's timezone

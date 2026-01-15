@@ -2678,7 +2678,8 @@ async def get_agent_response(
 
     try:
         user_tz = pytz.timezone(user_timezone_str)
-    except:
+    except pytz.exceptions.UnknownTimeZoneError as e:
+        logger.warning(f"Invalid timezone '{user_timezone_str}' in user profile, falling back to Europe/Stockholm: {e}")
         user_tz = pytz.timezone('Europe/Stockholm')
 
     # Get current time in user's timezone

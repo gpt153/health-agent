@@ -154,8 +154,8 @@ async def auto_save_user_info(user_id: str, user_message: str, agent_response: s
         with open("/tmp/autosave_called.txt", "a") as f:
             from datetime import datetime
             f.write(f"{datetime.now()}: User {user_id} - {user_message[:50]}\n")
-    except:
-        pass
+    except (IOError, OSError) as e:
+        logger.debug(f"Failed to write debug file: {e}")
 
     try:
         from openai import AsyncOpenAI

@@ -640,7 +640,14 @@ async def handle_onboarding_message(update: Update, context: ContextTypes.DEFAUL
                     f"✅ Great! Your timezone is now **{tz_input}**",
                     parse_mode="Markdown"
                 )
-            except:
+            except pytz.exceptions.UnknownTimeZoneError as e:
+                logger.warning(f"Invalid timezone input '{update.message.text}' from user {user_id}: {e}")
+                await update.message.reply_text(
+                    "❌ Invalid timezone. Try \"America/New_York\" or share your location."
+                )
+                return
+            except Exception as e:
+                logger.error(f"Unexpected error during timezone validation for user {user_id}: {e}", exc_info=True)
                 await update.message.reply_text(
                     "❌ Invalid timezone. Try \"America/New_York\" or share your location."
                 )
