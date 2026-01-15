@@ -35,6 +35,10 @@ LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 USDA_API_KEY: str = os.getenv("USDA_API_KEY", "DEMO_KEY")
 ENABLE_NUTRITION_VERIFICATION: bool = os.getenv("ENABLE_NUTRITION_VERIFICATION", "true").lower() == "true"
 
+# Rate Limiting
+# Use memory:// for development, redis://localhost:6379 for production
+RATE_LIMIT_STORAGE_URL: str = os.getenv("RATE_LIMIT_STORAGE_URL", "memory://")
+
 # Validation
 def validate_config() -> None:
     """Validate required configuration"""

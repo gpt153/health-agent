@@ -7,10 +7,13 @@ from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 import os
 
+from src.config import RATE_LIMIT_STORAGE_URL
+
 logger = logging.getLogger(__name__)
 
-# Initialize rate limiter
-limiter = Limiter(key_func=get_remote_address)
+# Initialize rate limiter with configurable storage
+# For production, set RATE_LIMIT_STORAGE_URL=redis://localhost:6379
+limiter = Limiter(key_func=get_remote_address, storage_uri=RATE_LIMIT_STORAGE_URL)
 
 
 def setup_cors(app):
@@ -33,4 +36,5 @@ def setup_rate_limiting(app):
     """Configure rate limiting"""
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-    logger.info("Rate limiting configured: 100/minute per IP")
+    storage_type = "Redis" if "redis" in RATE_LIMIT_STORAGE_URL else "Memory"
+    logger.info(f"Rate limiting configured with {storage_type} storage")
