@@ -6,9 +6,27 @@ them against typical ranges from USDA data and nutritional science.
 
 import logging
 import re
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List, TypedDict, Any
 
 logger = logging.getLogger(__name__)
+
+
+# TypedDict for validation results
+class ValidationResult(TypedDict, total=False):
+    """Result of nutrition estimate validation"""
+    is_valid: bool
+    confidence: float
+    issues: List[str]
+    suggested_calories: Optional[int]
+    reasoning: str
+    expected_range: Optional[Tuple[int, int]]
+
+
+class FoodRange(TypedDict):
+    """Calorie range for a food item per 100g"""
+    min: float
+    max: float
+    typical: float
 
 # Typical calorie ranges per 100g (based on USDA FoodData Central)
 # Format: {"food_key": {"min": cal, "max": cal, "typical": cal}}
@@ -161,7 +179,7 @@ def normalize_food_name(food_name: str) -> str:
     return normalized
 
 
-def find_food_range(food_name: str) -> Optional[Dict[str, float]]:
+def find_food_range(food_name: str) -> Optional[FoodRange]:
     """
     Find matching calorie range for a food.
 
@@ -199,7 +217,7 @@ def validate_nutrition_estimate(
     protein: float = 0,
     carbs: float = 0,
     fat: float = 0
-) -> Dict:
+) -> ValidationResult:
     """
     Validate if nutrition estimate is reasonable.
 
@@ -317,7 +335,7 @@ def validate_nutrition_estimate(
     return result
 
 
-def batch_validate_food_items(food_items: list) -> list:
+def batch_validate_food_items(food_items: List[Any]) -> List[ValidationResult]:
     """
     Validate a list of food items.
 
