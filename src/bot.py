@@ -943,12 +943,103 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         user_memory = await memory_manager.load_user_memory(user_id)
         visual_patterns = user_memory.get("visual_patterns", "")
 
-        # Analyze with vision AI (with caption and visual patterns)
+        # Task 4.1: Add Mem0 semantic search for relevant food context
+        from src.memory.mem0_manager import mem0_manager
+        mem0_context = ""
+        try:
+            food_memories = mem0_manager.search(
+                user_id,
+                query=f"food photo {caption if caption else 'meal'}",
+                limit=5
+            )
+            # Handle Mem0 returning dict with 'results' key or direct list
+            if isinstance(food_memories, dict):
+                food_memories = food_memories.get('results', [])
+
+            if food_memories:
+                mem0_context = "\n\n**Relevant context from past conversations:**\n"
+                for mem in food_memories:
+                    if isinstance(mem, dict):
+                        memory_text = mem.get('memory', mem.get('text', str(mem)))
+                    elif isinstance(mem, str):
+                        memory_text = mem
+                    else:
+                        memory_text = str(mem)
+                    mem0_context += f"- {memory_text}\n"
+                logger.info(f"[PHOTO] Added {len(food_memories)} Mem0 memories to context")
+        except Exception as e:
+            logger.warning(f"[PHOTO] Failed to load Mem0 context: {e}")
+
+        # Task 4.2: Include recent food history (last 7 days)
+        from datetime import timedelta
+        from src.db.queries import get_food_entries_by_date
+        food_history_context = ""
+        try:
+            recent_foods = await get_food_entries_by_date(
+                user_id,
+                start_date=(datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d'),
+                end_date=datetime.now().strftime('%Y-%m-%d')
+            )
+
+            if recent_foods:
+                # Summarize recent patterns
+                food_counts = {}
+                for entry in recent_foods:
+                    foods_data = entry.get('foods', [])
+                    if isinstance(foods_data, str):
+                        import json
+                        foods_data = json.loads(foods_data)
+
+                    for food in foods_data:
+                        food_name = food.get('food_name', food.get('name', 'unknown'))
+                        food_counts[food_name] = food_counts.get(food_name, 0) + 1
+
+                # Top 5 most logged foods
+                top_foods = sorted(food_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+                if top_foods:
+                    food_history_context = "\n\n**Your recent eating patterns (last 7 days):**\n"
+                    for food_name, count in top_foods:
+                        food_history_context += f"- {food_name} (logged {count}x this week)\n"
+                    logger.info(f"[PHOTO] Added food history context with {len(top_foods)} items")
+        except Exception as e:
+            logger.warning(f"[PHOTO] Failed to load food history: {e}")
+
+        # Task 4.3: Apply food habits
+        from src.memory.habit_extractor import habit_extractor
+        habit_context = ""
+        try:
+            habits = await habit_extractor.get_user_habits(
+                user_id,
+                habit_type="food_prep",
+                min_confidence=0.6
+            )
+
+            if habits:
+                habit_context = "\n\n**User's food preparation habits:**\n"
+                for habit in habits:
+                    habit_data = habit['habit_data']
+                    food = habit_data.get('food', habit['habit_key'])
+                    ratio = habit_data.get('ratio', '')
+                    liquid = habit_data.get('liquid', '').replace('_', ' ')
+
+                    habit_context += f"- {food}: Always prepared with {liquid}"
+                    if ratio:
+                        habit_context += f" ({ratio} ratio)"
+                    habit_context += f" (confidence: {habit['confidence']:.0%})\n"
+                logger.info(f"[PHOTO] Added {len(habits)} food habits to context")
+        except Exception as e:
+            logger.warning(f"[PHOTO] Failed to load habits: {e}")
+
+        # Analyze with vision AI (with all enhanced context)
         analysis = await analyze_food_photo(
             str(photo_path),
             caption=caption,
             user_id=user_id,
-            visual_patterns=visual_patterns
+            visual_patterns=visual_patterns,
+            semantic_context=mem0_context,
+            food_history=food_history_context,
+            food_habits=habit_context
         )
 
         # Verify nutrition data with USDA database
