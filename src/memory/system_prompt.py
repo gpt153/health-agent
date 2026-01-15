@@ -5,12 +5,20 @@ from src.memory.mem0_manager import mem0_manager
 logger = logging.getLogger(__name__)
 
 
-def generate_system_prompt(user_memory: dict, user_id: str = None, current_query: str = None) -> str:
+def generate_system_prompt(
+    user_memory: dict,
+    user_id: str = None,
+    current_query: str = None,
+    preloaded_memories: list = None
+) -> str:
     """
     Generate personalized system prompt based on user memory
 
     Args:
         user_memory: Dict with profile, preferences, patterns, food_history
+        user_id: User ID (deprecated - use preloaded_memories instead)
+        current_query: Current query (deprecated - use preloaded_memories instead)
+        preloaded_memories: Pre-loaded Mem0 search results (preferred for performance)
 
     Returns:
         Personalized system prompt string
@@ -54,9 +62,32 @@ def generate_system_prompt(user_memory: dict, user_id: str = None, current_query
     weekday = user_now.strftime("%A")
     utc_time = utc_now.strftime("%H:%M")
 
-    # Search Mem0 for relevant context if query provided
+    # Format Mem0 context from preloaded memories
     mem0_context = ""
-    if user_id and current_query:
+    if preloaded_memories:
+        # Use pre-loaded memories (preferred - already searched in parallel)
+        memories = preloaded_memories
+        logger.info(f"[MEM0_DEBUG] Using {len(memories)} preloaded memories")
+
+        if memories:
+            mem0_context = "\n\n**RELEVANT MEMORIES (from semantic search):**\n"
+            for mem in memories:
+                # Handle different Mem0 return formats
+                if isinstance(mem, dict):
+                    # Dictionary format: extract 'memory' or 'text' field
+                    memory_text = mem.get('memory', mem.get('text', str(mem)))
+                elif isinstance(mem, str):
+                    # String format: use directly
+                    memory_text = mem
+                else:
+                    # Object format: convert to string
+                    memory_text = str(mem)
+                mem0_context += f"- {memory_text}\n"
+            mem0_context += "\n"
+            logger.info(f"[MEM0_DEBUG] Added {len(memories)} memories to context")
+    elif user_id and current_query:
+        # Fallback: search Mem0 inline (deprecated - slower)
+        logger.warning("[MEM0_DEBUG] Using inline search - prefer preloaded_memories for performance")
         try:
             memories = mem0_manager.search(user_id, current_query, limit=5)
             logger.info(f"[MEM0_DEBUG] Query: {current_query[:50]}")
