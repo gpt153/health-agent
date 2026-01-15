@@ -792,3 +792,23 @@ async def health_check(fastapi_request: Request):
         database=db_status,
         timestamp=datetime.now()
     )
+
+
+@router.get("/api/cache/stats")
+async def get_cache_statistics(api_key: str = Depends(verify_api_key)):
+    """
+    Get cache performance statistics
+
+    Returns cache hit/miss rates and load reduction metrics.
+    Target: 30% load reduction on user preferences, profiles, and gamification data.
+    """
+    from src.utils.cache import get_cache_stats
+
+    stats = get_cache_stats()
+
+    return {
+        "cache_stats": stats,
+        "target_load_reduction": 30.0,
+        "target_achieved": stats["load_reduction_percent"] >= 30.0,
+        "timestamp": datetime.now()
+    }
