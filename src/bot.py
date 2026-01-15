@@ -1048,6 +1048,24 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await save_food_entry(entry)
         logger.info(f"Saved food entry for {user_id}")
 
+        # Trigger habit detection for food patterns
+        from src.memory.habit_extractor import habit_extractor
+        try:
+            for food_item in entry.foods:
+                parsed_components = {
+                    "food": food_item.food_name,
+                    "quantity": f"{food_item.quantity} {food_item.unit}",
+                    "preparation": food_item.food_name  # Could be enhanced
+                }
+                await habit_extractor.detect_food_prep_habit(
+                    user_id,
+                    food_item.food_name,
+                    parsed_components
+                )
+        except Exception as e:
+            logger.warning(f"[HABITS] Failed to detect habits: {e}")
+            # Continue - habit detection shouldn't block food logging
+
         # Process gamification (XP, streaks, achievements)
         meal_type = entry.meal_type or "snack"  # Default if not set
         gamification_result = await handle_food_entry_gamification(
