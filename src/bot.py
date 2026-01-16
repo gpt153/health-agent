@@ -5,7 +5,7 @@ from pathlib import Path
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import telegram.error
-from src.config import TELEGRAM_BOT_TOKEN, DATA_PATH, TELEGRAM_TOPIC_FILTER
+from src.config import TELEGRAM_BOT_TOKEN, DATA_PATH, TELEGRAM_TOPIC_FILTER, ENABLE_SENTRY
 from src.utils.auth import is_authorized
 from src.db.queries import (
     create_user,
@@ -62,6 +62,33 @@ logger = logging.getLogger(__name__)
 
 # Global reminder manager (will be initialized in create_bot_application)
 reminder_manager = None
+
+
+def init_bot_monitoring():
+    """Initialize monitoring for Telegram bot"""
+    if ENABLE_SENTRY:
+        from src.monitoring import init_sentry
+        init_sentry()
+        logger.info("Sentry monitoring initialized for bot")
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle errors in bot"""
+    logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
+
+    # Capture in Sentry
+    if ENABLE_SENTRY:
+        from src.monitoring import capture_exception
+
+        # Add context
+        extra = {}
+        if update and hasattr(update, 'effective_user') and update.effective_user:
+            extra['user_id'] = str(update.effective_user.id)
+        if update and hasattr(update, 'effective_message') and update.effective_message:
+            if hasattr(update.effective_message, 'text'):
+                extra['message_text'] = str(update.effective_message.text)[:200]  # Limit length
+
+        capture_exception(context.error, **extra)
 
 
 def should_process_message(update: Update) -> bool:
@@ -1379,6 +1406,9 @@ def create_bot_application() -> Application:
     """Create and configure the bot application"""
     global reminder_manager
 
+    # Initialize monitoring
+    init_bot_monitoring()
+
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     # Initialize reminder manager
@@ -1439,6 +1469,10 @@ def create_bot_application() -> Application:
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.LOCATION, handle_location))
+
+    # Add error handler
+    app.add_error_handler(error_handler)
+    logger.info("Error handler registered")
 
     logger.info("Bot application created")
     return app

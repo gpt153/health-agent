@@ -5,7 +5,7 @@ from typing import AsyncGenerator, Optional
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
-from src.config import DATABASE_URL
+from src.config import DATABASE_URL, ENABLE_PROMETHEUS
 from src.exceptions import ConnectionError as DBConnectionError, wrap_external_exception
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,18 @@ class Database:
                 message="Database pool not initialized. Call init_pool() first.",
                 operation="get_connection"
             )
+
+        # Update pool metrics
+        if ENABLE_PROMETHEUS:
+            try:
+                from src.monitoring import update_pool_metrics
+                pool_stats = self._pool.get_stats()
+                update_pool_metrics(
+                    total=pool_stats.get('pool_size', 0),
+                    available=pool_stats.get('pool_available', 0)
+                )
+            except Exception as e:
+                logger.debug(f"Failed to update pool metrics: {e}")
 
         try:
             async with self._pool.connection() as conn:

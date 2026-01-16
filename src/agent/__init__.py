@@ -10,7 +10,7 @@ from pydantic_ai import Agent, ModelMessagesTypeAdapter, RunContext
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart
 from pydantic import BaseModel, Field
 
-from src.config import AGENT_MODEL
+from src.config import AGENT_MODEL, ENABLE_SENTRY, ENABLE_PROMETHEUS
 from src.models.user import UserPreferences
 from src.models.tracking import TrackingCategory, TrackingEntry, TrackingField, TrackingSchedule
 from src.db.queries import (
@@ -2882,6 +2882,11 @@ async def get_agent_response(
                     )
                 )
 
+    # Set user context for monitoring
+    if ENABLE_SENTRY:
+        from src.monitoring import set_user_context
+        set_user_context(telegram_id)
+
     # Determine which model to use
     selected_model = model_override if model_override else AGENT_MODEL
 
@@ -2943,13 +2948,42 @@ async def get_agent_response(
         tool_manager.register_tools_on_agent(dynamic_agent)
 
         # Run agent with message history for context (converted to ModelMessage objects)
-        result = await dynamic_agent.run(
-            enhanced_message, deps=deps, message_history=converted_history
-        )
+        # Track agent call timing for Prometheus
+        if ENABLE_PROMETHEUS:
+            import time
+            from src.monitoring.prometheus_metrics import metrics
+            agent_type = "claude" if "claude" in selected_model.lower() else "gpt4"
+            start_time = time.time()
 
-        return result.output
+            try:
+                result = await dynamic_agent.run(
+                    enhanced_message, deps=deps, message_history=converted_history
+                )
+
+                # Record success
+                duration = time.time() - start_time
+                metrics.agent_call_duration_seconds.labels(agent_type=agent_type).observe(duration)
+                metrics.agent_calls_total.labels(agent_type=agent_type, status="success").inc()
+
+                return result.output
+            except Exception as e:
+                # Record failure
+                duration = time.time() - start_time
+                metrics.agent_call_duration_seconds.labels(agent_type=agent_type).observe(duration)
+                metrics.agent_calls_total.labels(agent_type=agent_type, status="error").inc()
+                raise
+        else:
+            result = await dynamic_agent.run(
+                enhanced_message, deps=deps, message_history=converted_history
+            )
+            return result.output
 
     except Exception as primary_error:
+        # Capture exception in Sentry
+        if ENABLE_SENTRY:
+            from src.monitoring import capture_exception
+            capture_exception(primary_error, model=selected_model)
+
         # Check if it's an API overload/availability error
         error_str = str(primary_error).lower()
         if any(keyword in error_str for keyword in ['overload', '529', '503', 'rate_limit', 'unavailable']):

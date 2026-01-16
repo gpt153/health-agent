@@ -36,6 +36,7 @@ class Settings(BaseSettings):
         description="Topic filter: 'all', 'none', whitelist (123,456), or blacklist (!123,456)",
     )
 
+<<<<<<< HEAD
     # Database
     database_url: str = Field(
         ...,  # Required
@@ -118,6 +119,41 @@ class Settings(BaseSettings):
     rate_limit_storage_url: str = Field(
         default="memory://",
         description="Rate limit storage URL: 'memory://' for development, 'redis://localhost:6379' for production",
+    )
+
+    # Monitoring
+    enable_sentry: bool = Field(
+        default=False,
+        description="Enable Sentry error tracking (opt-in)",
+    )
+
+    sentry_dsn: str = Field(
+        default="",
+        description="Sentry DSN for error tracking",
+    )
+
+    sentry_environment: str = Field(
+        default="development",
+        description="Sentry environment name",
+    )
+
+    sentry_traces_sample_rate: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Sentry traces sample rate (0.0-1.0)",
+    )
+
+    enable_prometheus: bool = Field(
+        default=True,
+        description="Enable Prometheus metrics collection (opt-out)",
+    )
+
+    prometheus_port: int = Field(
+        default=9090,
+        ge=1,
+        le=65535,
+        description="Prometheus metrics port (1-65535)",
     )
 
     # Field Validators
@@ -277,6 +313,14 @@ LOG_LEVEL = settings.log_level
 USDA_API_KEY = settings.usda_api_key
 ENABLE_NUTRITION_VERIFICATION = settings.enable_nutrition_verification
 RATE_LIMIT_STORAGE_URL = settings.rate_limit_storage_url
+
+# Monitoring
+ENABLE_SENTRY = settings.enable_sentry
+SENTRY_DSN = settings.sentry_dsn
+SENTRY_ENVIRONMENT = settings.sentry_environment
+SENTRY_TRACES_SAMPLE_RATE = settings.sentry_traces_sample_rate
+ENABLE_PROMETHEUS = settings.enable_prometheus
+PROMETHEUS_PORT = settings.prometheus_port
 
 
 def validate_config() -> None:

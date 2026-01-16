@@ -5,9 +5,9 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from src.api.routes import router
-from src.api.middleware import setup_cors, setup_rate_limiting
+from src.api.middleware import setup_cors, setup_rate_limiting, setup_monitoring
 from src.db.connection import db
-from src.config import LOG_LEVEL
+from src.config import LOG_LEVEL, ENABLE_SENTRY, ENABLE_PROMETHEUS
 from src.exceptions import (
     HealthAgentError,
     ValidationError,
@@ -32,6 +32,13 @@ async def lifespan(app: FastAPI):
     """Lifecycle manager for FastAPI application"""
     # Startup
     logger.info("Starting API server...")
+
+    # Initialize monitoring
+    if ENABLE_SENTRY:
+        from src.monitoring import init_sentry
+        init_sentry()
+        logger.info("Sentry monitoring initialized")
+
     await db.init_pool()
     logger.info("Database pool initialized")
 
@@ -60,9 +67,16 @@ def create_api_application() -> FastAPI:
     # Setup middleware
     setup_cors(app)
     setup_rate_limiting(app)
+    setup_monitoring(app)
 
     # Include routes
     app.include_router(router)
+
+    # Include metrics endpoint
+    if ENABLE_PROMETHEUS:
+        from src.api.metrics_routes import router as metrics_router
+        app.include_router(metrics_router)
+        logger.info("Prometheus metrics endpoint enabled at /metrics")
 
     # Custom exception handlers
     @app.exception_handler(ValidationError)
@@ -119,6 +133,12 @@ def create_api_application() -> FastAPI:
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
         logger.error(f"Unhandled exception: {exc}", exc_info=True)
+
+        # Capture exception in Sentry
+        if ENABLE_SENTRY:
+            from src.monitoring import capture_exception
+            capture_exception(exc, url=str(request.url), method=request.method)
+
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
