@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from src.config import AGENT_MODEL, ENABLE_SENTRY, ENABLE_PROMETHEUS
 from src.models.user import UserPreferences
-from src.models.tracking import TrackingCategory, TrackingEntry, TrackingField, TrackingSchedule
+from src.models.tracking import TrackingCategory, TrackerEntry, TrackingField, TrackingSchedule
 from src.db.queries import (
     create_tracking_category,
     save_tracking_entry,
@@ -467,7 +467,7 @@ async def log_tracking_entry(
             )
 
         # Create tracking entry with UTC timestamp
-        entry = TrackingEntry(
+        entry = TrackerEntry(
             id=str(uuid4()),
             user_id=deps.telegram_id,
             category_id=category["id"],

@@ -17,6 +17,8 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",  # Ignore unknown env vars
+        # Parse comma-separated strings as JSON arrays
+        env_parse_enums=True,
     )
 
     # Telegram Settings
@@ -26,17 +28,22 @@ class Settings(BaseSettings):
         pattern=r"^\d+:[A-Za-z0-9_-]+$",
     )
 
-    allowed_telegram_ids: list[str] = Field(
+    allowed_telegram_ids_raw: str = Field(
         ...,  # Required
+        alias="allowed_telegram_ids",
         description="Comma-separated list of allowed Telegram user IDs",
     )
+
+    @property
+    def allowed_telegram_ids(self) -> list[str]:
+        """Parse allowed Telegram IDs from comma-separated string"""
+        return [id.strip() for id in self.allowed_telegram_ids_raw.split(",") if id.strip()]
 
     telegram_topic_filter: str = Field(
         default="all",
         description="Topic filter: 'all', 'none', whitelist (123,456), or blacklist (!123,456)",
     )
 
-<<<<<<< HEAD
     # Database
     database_url: str = Field(
         ...,  # Required
@@ -156,35 +163,33 @@ class Settings(BaseSettings):
         description="Prometheus metrics port (1-65535)",
     )
 
+    # Model Validators (run before field validation)
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_list_fields(cls, data: dict) -> dict:
+        """Parse comma-separated strings into lists before validation"""
+        # Handle api_keys
+        if "api_keys" in data and isinstance(data["api_keys"], str):
+            if data["api_keys"]:
+                data["api_keys"] = [
+                    key.strip() for key in data["api_keys"].split(",") if key.strip()
+                ]
+            else:
+                data["api_keys"] = []
+
+        # Handle cors_origins
+        if "cors_origins" in data and isinstance(data["cors_origins"], str):
+            if data["cors_origins"]:
+                data["cors_origins"] = [
+                    origin.strip() for origin in data["cors_origins"].split(",") if origin.strip()
+                ]
+            else:
+                data["cors_origins"] = []
+
+        return data
+
     # Field Validators
-
-    @field_validator("allowed_telegram_ids", mode="before")
-    @classmethod
-    def parse_telegram_ids(cls, v: str | list[str]) -> list[str]:
-        """Parse comma-separated Telegram IDs"""
-        if isinstance(v, str):
-            return [id.strip() for id in v.split(",") if id.strip()]
-        return v
-
-    @field_validator("api_keys", mode="before")
-    @classmethod
-    def parse_api_keys(cls, v: str | list[str]) -> list[str]:
-        """Parse comma-separated API keys"""
-        if isinstance(v, str):
-            if not v:  # Empty string
-                return []
-            return [key.strip() for key in v.split(",") if key.strip()]
-        return v if v else []
-
-    @field_validator("cors_origins", mode="before")
-    @classmethod
-    def parse_cors_origins(cls, v: str | list[str]) -> list[str]:
-        """Parse comma-separated CORS origins"""
-        if isinstance(v, str):
-            if not v:  # Empty string
-                return []
-            return [origin.strip() for origin in v.split(",") if origin.strip()]
-        return v if v else []
 
     @field_validator("database_url")
     @classmethod
@@ -206,19 +211,20 @@ class Settings(BaseSettings):
 
         return v
 
-    @field_validator("allowed_telegram_ids")
+    @field_validator("allowed_telegram_ids_raw")
     @classmethod
-    def validate_telegram_ids(cls, v: list[str]) -> list[str]:
+    def validate_telegram_ids(cls, v: str) -> str:
         """Validate Telegram IDs are non-empty and numeric"""
-        if not v or v == [""]:
+        if not v or not v.strip():
             raise ValueError(
                 "ALLOWED_TELEGRAM_IDS cannot be empty. "
                 "Get your Telegram ID from @userinfobot on Telegram."
             )
 
         # Validate each ID is numeric
-        for tid in v:
-            if not tid.strip().isdigit():
+        ids = [id.strip() for id in v.split(",") if id.strip()]
+        for tid in ids:
+            if not tid.isdigit():
                 raise ValueError(
                     f"Invalid Telegram ID '{tid}'. "
                     "Telegram IDs must be numeric (e.g., 123456789). "

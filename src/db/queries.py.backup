@@ -8,7 +8,7 @@ from datetime import datetime, date
 from src.db.connection import db
 from src.models.user import UserProfile
 from src.models.food import FoodEntry
-from src.models.tracking import TrackingCategory, TrackingEntry
+from src.models.tracking import TrackingCategory, TrackerEntry
 from src.models.reminder import Reminder
 from src.models.sleep import SleepEntry
 from src.models.sleep_settings import SleepQuizSettings, SleepQuizSubmission
@@ -356,7 +356,7 @@ async def get_tracking_categories(user_id: str, active_only: bool = True) -> Lis
             return await cur.fetchall()
 
 
-async def save_tracking_entry(entry: TrackingEntry) -> None:
+async def save_tracking_entry(entry: TrackerEntry) -> None:
     """Save tracking entry"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:

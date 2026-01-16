@@ -15,7 +15,7 @@ CREATE OR REPLACE FUNCTION query_tracker_entries(
     p_end_date TIMESTAMP DEFAULT NULL
 ) RETURNS TABLE (
     id UUID,
-    timestamp TIMESTAMP,
+    "timestamp" TIMESTAMP,
     data JSONB,
     notes TEXT,
     validation_status TEXT
@@ -141,7 +141,7 @@ CREATE OR REPLACE FUNCTION get_tracker_entries_by_daterange(
     p_end_date TIMESTAMP
 ) RETURNS TABLE (
     id UUID,
-    timestamp TIMESTAMP,
+    "timestamp" TIMESTAMP,
     data JSONB,
     notes TEXT
 ) AS $$
@@ -174,7 +174,7 @@ CREATE OR REPLACE FUNCTION get_recent_tracker_entries(
     p_limit INTEGER DEFAULT 10
 ) RETURNS TABLE (
     id UUID,
-    timestamp TIMESTAMP,
+    "timestamp" TIMESTAMP,
     data JSONB,
     notes TEXT
 ) AS $$

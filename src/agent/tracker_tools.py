@@ -2,13 +2,17 @@
 PydanticAI tools for custom tracker querying and analysis.
 Epic 006 - Phase 4: Agent Integration
 """
+from __future__ import annotations
+
 from pydantic_ai import RunContext
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, TYPE_CHECKING
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from src.agent import AgentDeps
+if TYPE_CHECKING:
+    from src.agent import AgentDeps
+
 from src.db.queries import (
     get_tracking_categories,
     query_tracker_entries,
