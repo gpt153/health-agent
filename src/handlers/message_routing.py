@@ -14,13 +14,9 @@ from src.db.queries import (
 )
 from src.memory.file_manager import memory_manager
 from src.memory.mem0_manager import mem0_manager
-from src.scheduler.reminder_manager import ReminderManager
 from src.agent import get_agent_response
 
 logger = logging.getLogger(__name__)
-
-# Get reminder manager instance (imported from bot.py context)
-reminder_manager = ReminderManager()
 
 
 async def route_message(
@@ -163,6 +159,9 @@ async def _handle_ai_message(
             if model_choice == "haiku":
                 model_override = "anthropic:claude-3-5-haiku-latest"
                 logger.info(f"[ROUTER] Using Haiku for fast response: {routing_reason}")
+
+            # Get reminder_manager from bot context
+            reminder_manager = context.bot_data.get('reminder_manager')
 
             # Get agent response
             response = await get_agent_response(
