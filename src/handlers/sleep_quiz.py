@@ -550,8 +550,10 @@ async def handle_alertness_callback(update: Update, context: ContextTypes.DEFAUL
             alertness_rating=alertness
         )
 
-        # Save to database
+        # Save to database and track success
+        data_saved = False
         await save_sleep_entry(entry)
+        data_saved = True
 
         # Process gamification (XP, streaks, achievements)
         gamification_result = await handle_sleep_quiz_gamification(
@@ -617,7 +619,18 @@ async def handle_alertness_callback(update: Update, context: ContextTypes.DEFAUL
         if gamification_msg:
             summary += f"\n\n🎯 **PROGRESS**\n{gamification_msg}"
 
-        await query.edit_message_text(summary, parse_mode="Markdown")
+        # Try to display summary via Telegram
+        try:
+            await query.edit_message_text(summary, parse_mode="Markdown")
+        except Exception as telegram_error:
+            # If Telegram message fails, try a simpler message
+            logger.warning(f"Failed to display full summary via Telegram: {telegram_error}")
+            try:
+                simple_msg = f"✅ Sleep data saved!\n\nTotal sleep: {hours}h {minutes}m\nQuality: {entry.sleep_quality_rating}/10"
+                await query.edit_message_text(simple_msg)
+            except Exception as fallback_error:
+                # Even simple message failed, log it but data is saved
+                logger.error(f"Failed to display any message via Telegram: {fallback_error}", exc_info=True)
 
         # Clean up quiz data
         del context.user_data['sleep_quiz_data']
@@ -648,11 +661,28 @@ async def handle_alertness_callback(update: Update, context: ContextTypes.DEFAUL
 
     except Exception as e:
         logger.error(f"Error completing sleep quiz: {e}", exc_info=True)
-        await query.edit_message_text(
-            "❌ **Error:** Failed to save sleep data. Please try again later.\n\n"
-            "If the problem persists, contact support.",
-            parse_mode="Markdown"
-        )
+
+        # Check if data was saved before the error occurred
+        if 'data_saved' in locals() and data_saved:
+            # Data was saved successfully, error happened after
+            error_msg = (
+                "✅ Your sleep data was saved successfully!\n\n"
+                "However, there was an error displaying the summary. "
+                "Your data is safe and can be viewed in your history."
+            )
+        else:
+            # Data save failed or error happened before save
+            error_msg = (
+                "❌ **Error:** Failed to save sleep data. Please try again later.\n\n"
+                "If the problem persists, contact support."
+            )
+
+        try:
+            await query.edit_message_text(error_msg, parse_mode="Markdown")
+        except Exception:
+            # If even the error message fails, log it
+            logger.error("Failed to send error message to user", exc_info=True)
+
         if 'sleep_quiz_data' in context.user_data:
             del context.user_data['sleep_quiz_data']
         return ConversationHandler.END
