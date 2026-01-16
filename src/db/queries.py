@@ -1,6 +1,7 @@
 """Database queries"""
 import json
 import logging
+from functools import wraps
 from typing import Optional, Dict, List, Any, TypedDict
 from uuid import UUID
 from datetime import datetime, date
@@ -13,6 +14,7 @@ from src.models.sleep import SleepEntry
 from src.models.sleep_settings import SleepQuizSettings, SleepQuizSubmission
 from src.utils.cache import cache_with_ttl, CacheConfig, invalidate_user_cache
 from src.exceptions import QueryError, RecordNotFoundError, wrap_external_exception
+from src.config import ENABLE_PROMETHEUS
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +97,23 @@ class OnboardingStateDict(TypedDict, total=False):
     created_at: datetime
 
 
+def track_query(query_type: str, table: str = ""):
+    """Decorator to track database query metrics"""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            if ENABLE_PROMETHEUS:
+                from src.monitoring import track_database_query
+                with track_database_query(query_type, table):
+                    return await func(*args, **kwargs)
+            else:
+                return await func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
 # User operations
+@track_query("INSERT", "users")
 async def create_user(telegram_id: str) -> None:
     """Create new user in database"""
     try:
@@ -116,6 +134,7 @@ async def create_user(telegram_id: str) -> None:
         )
 
 
+@track_query("SELECT", "users")
 async def user_exists(telegram_id: str) -> bool:
     """Check if user exists"""
     async with db.connection() as conn:
@@ -128,6 +147,7 @@ async def user_exists(telegram_id: str) -> bool:
 
 
 # Food entry operations
+@track_query("INSERT", "food_entries")
 async def save_food_entry(entry: FoodEntry) -> None:
     """Save food entry to database"""
     async with db.connection() as conn:

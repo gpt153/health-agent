@@ -2,7 +2,7 @@
 import logging
 import asyncio
 import os
-from src.config import validate_config, LOG_LEVEL
+from src.config import validate_config, LOG_LEVEL, ENABLE_SENTRY
 from src.db.connection import db
 from src.bot import create_bot_application
 from src.agent.dynamic_tools import tool_manager
@@ -14,6 +14,12 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+# Initialize Sentry monitoring early (for startup errors)
+if ENABLE_SENTRY:
+    from src.monitoring import init_sentry
+    init_sentry()
+    logger.info("Sentry monitoring initialized (early)")
 
 
 async def run_telegram_bot() -> None:
