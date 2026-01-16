@@ -35,6 +35,15 @@ from src.agent.dynamic_tools import (
     tool_manager,
     CodeValidationError
 )
+from src.agent.tracker_tools import (
+    get_user_trackers,
+    query_tracker_data,
+    get_tracker_statistics,
+    find_tracker_low_values,
+    get_tracker_value_distribution,
+    get_recent_tracker_data,
+    TrackerQueryResult
+)
 
 logger = logging.getLogger(__name__)
 
@@ -489,6 +498,143 @@ async def log_tracking_entry(
             category=category_name,
             data=data,
         )
+
+
+# Epic 006: Advanced Tracker Query Tools
+
+@agent.tool
+async def get_trackers(ctx) -> TrackerQueryResult:
+    """
+    Get all active custom trackers the user has created.
+    Use this first to discover what tracking data is available.
+
+    Returns:
+        TrackerQueryResult with list of trackers and their field schemas
+    """
+    return await get_user_trackers(ctx)
+
+
+@agent.tool
+async def query_tracker(
+    ctx,
+    tracker_name: str,
+    field_name: str,
+    operator: str,
+    value: Any,
+    days_back: int = 30
+) -> TrackerQueryResult:
+    """
+    Query custom tracker entries by field value.
+
+    Use this to find specific tracker data based on conditions.
+    For example: find all days where energy < 5, or days with heavy period flow.
+
+    Args:
+        tracker_name: Name of the tracker (e.g., "Energy", "Period", "Mood")
+        field_name: Field to query (e.g., "level", "flow", "mood_rating")
+        operator: Comparison operator: '=', '>', '<', '>=', '<='
+        value: Value to compare against
+        days_back: How many days to look back (default: 30)
+
+    Returns:
+        TrackerQueryResult with matching entries
+    """
+    return await query_tracker_data(ctx, tracker_name, field_name, operator, value, days_back)
+
+
+@agent.tool
+async def get_tracker_stats(
+    ctx,
+    tracker_name: str,
+    field_name: str,
+    days_back: int = 30
+) -> TrackerQueryResult:
+    """
+    Get statistics for a tracker field (average, min, max, count).
+
+    Use this to understand overall trends. For example:
+    - Average energy level over past week
+    - Sleep quality stats for past month
+
+    Args:
+        tracker_name: Name of the tracker
+        field_name: Field to analyze
+        days_back: Number of days to analyze (default: 30)
+
+    Returns:
+        TrackerQueryResult with statistics
+    """
+    return await get_tracker_statistics(ctx, tracker_name, field_name, days_back)
+
+
+@agent.tool
+async def find_low_tracker_days(
+    ctx,
+    tracker_name: str,
+    field_name: str,
+    threshold: float,
+    days_back: int = 30
+) -> TrackerQueryResult:
+    """
+    Find days where a tracker value was below a threshold.
+
+    Use this to identify concerning patterns like low energy, poor sleep, low mood.
+
+    Args:
+        tracker_name: Name of the tracker
+        field_name: Field to analyze
+        threshold: Threshold value (finds values BELOW this)
+        days_back: Number of days to look back (default: 30)
+
+    Returns:
+        TrackerQueryResult with pattern days
+    """
+    return await find_tracker_low_values(ctx, tracker_name, field_name, threshold, days_back)
+
+
+@agent.tool
+async def get_tracker_distribution(
+    ctx,
+    tracker_name: str,
+    field_name: str,
+    days_back: int = 30
+) -> TrackerQueryResult:
+    """
+    Get distribution of values for a field.
+
+    Useful for categorical data like symptoms, exercise types, moods.
+    Shows which values appear most frequently.
+
+    Args:
+        tracker_name: Name of the tracker
+        field_name: Field to analyze
+        days_back: Number of days to analyze (default: 30)
+
+    Returns:
+        TrackerQueryResult with value distribution
+    """
+    return await get_tracker_value_distribution(ctx, tracker_name, field_name, days_back)
+
+
+@agent.tool
+async def get_recent_tracker(
+    ctx,
+    tracker_name: str,
+    limit: int = 7
+) -> TrackerQueryResult:
+    """
+    Get most recent entries for a tracker.
+
+    Use this to show user their recent tracking history.
+
+    Args:
+        tracker_name: Name of the tracker
+        limit: Number of recent entries to retrieve (default: 7)
+
+    Returns:
+        TrackerQueryResult with recent entries
+    """
+    return await get_recent_tracker_data(ctx, tracker_name, limit)
 
 
 @agent.tool
