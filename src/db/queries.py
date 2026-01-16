@@ -3021,7 +3021,7 @@ async def get_user_streak(user_id: str, streak_type: str, source_id: Optional[st
                 SELECT id, user_id, streak_type, source_id, current_streak, best_streak,
                        last_activity_date, freeze_days_remaining, created_at, updated_at
                 FROM user_streaks
-                WHERE user_id = %s AND streak_type = %s AND (source_id = %s OR (source_id IS NULL AND %s IS NULL))
+                WHERE user_id = %s AND streak_type = %s AND (source_id = %s OR (source_id IS NULL AND %s::text IS NULL))
                 """,
                 (user_id, streak_type, source_id, source_id)
             )
@@ -3065,7 +3065,7 @@ async def update_user_streak(user_id: str, streak_type: str, streak_data: dict, 
                     last_activity_date = %s,
                     freeze_days_remaining = %s,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE user_id = %s AND streak_type = %s AND (source_id = %s OR (source_id IS NULL AND %s IS NULL))
+                WHERE user_id = %s AND streak_type = %s AND (source_id = %s OR (source_id IS NULL AND %s::text IS NULL))
                 """,
                 (
                     streak_data['current_streak'],
