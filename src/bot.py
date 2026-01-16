@@ -51,6 +51,12 @@ from src.gamification.integrations import (
     handle_sleep_quiz_gamification,
     handle_tracking_entry_gamification
 )
+from src.handlers.custom_tracking import (
+    tracker_creation_handler,
+    tracker_logging_handler,
+    tracker_viewing_handler,
+    my_trackers_command
+)
 
 logger = logging.getLogger(__name__)
 
@@ -542,25 +548,32 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 **What I can do:**
 - 📸 Analyze food photos for calories & macros
 - 💬 Chat naturally about your health goals
-- 📊 Track custom metrics (sleep, workouts, etc.)
+- 📊 Track custom metrics (period, energy, mood, etc.)
 - 🎯 Personalize my responses to your preferences
 - 📝 Remember your goals and patterns
+- 🔍 Analyze patterns in your tracked data
 
-**Commands:**
+**Core Commands:**
 /start - Reset and start over
 /transparency - See what data I have about you
 /settings - View and change your preferences
 /clear - Clear conversation history (fresh start)
 /help - Show this help message
 
+**Custom Tracking Commands:**
+/create_tracker - Create a new health tracker
+/log_tracker - Log an entry to a tracker
+/view_tracker - View your tracked data
+/my_trackers - List all your trackers
+
 **Tips:**
 - Send a food photo to log meals automatically
-- Ask me to track anything: "Track my sleep quality"
+- Create custom trackers for anything: period cycles, symptoms, energy, medications
+- Ask me about your data: "How has my energy been this week?"
 - Change preferences: "Be more brief" or "Use casual tone"
-- Ask questions: "What did I eat yesterday?"
 
 **Privacy:**
-All your data is stored locally in markdown files. You have full control and can delete anything anytime."""
+All your data is stored securely. You have full control and can delete anything anytime."""
 
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -1393,6 +1406,13 @@ def create_bot_application() -> Application:
 
     app.add_handler(sleep_settings_handler)
     logger.info("Sleep settings handler registered")
+
+    # Epic 006: Custom tracker handlers
+    app.add_handler(tracker_creation_handler)
+    app.add_handler(tracker_logging_handler)
+    app.add_handler(tracker_viewing_handler)
+    app.add_handler(CommandHandler("my_trackers", my_trackers_command))
+    logger.info("Custom tracking handlers registered (create, log, view, list)")
 
     # Add callback query handlers
     app.add_handler(reminder_completion_handler)

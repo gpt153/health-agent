@@ -336,6 +336,274 @@ async def save_tracking_entry(entry: TrackingEntry) -> None:
     logger.info(f"Saved tracking entry for user {entry.user_id}")
 
 
+# Advanced Tracker Query Functions (Epic 006 - Phase 3)
+
+async def query_tracker_entries(
+    user_id: str,
+    category_id: UUID,
+    field_name: str,
+    operator: str,
+    value: Any,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None
+) -> List[Dict[str, Any]]:
+    """
+    Query tracker entries by field value using PostgreSQL function.
+
+    Args:
+        user_id: User ID
+        category_id: Tracker category UUID
+        field_name: Name of field to query
+        operator: Comparison operator ('=', '>', '<', '>=', '<=', 'contains', 'in')
+        value: Value to compare against
+        start_date: Optional start date filter
+        end_date: Optional end date filter
+
+    Returns:
+        List of matching tracker entries
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM query_tracker_entries(%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    category_id,
+                    field_name,
+                    operator,
+                    json.dumps(value) if not isinstance(value, str) else json.dumps([value]),
+                    start_date,
+                    end_date
+                )
+            )
+            return await cur.fetchall()
+
+
+async def get_tracker_aggregates(
+    user_id: str,
+    category_id: UUID,
+    field_name: str,
+    aggregation: str,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None
+) -> float:
+    """
+    Get aggregate statistics for a tracker field.
+
+    Args:
+        user_id: User ID
+        category_id: Tracker category UUID
+        field_name: Name of field to aggregate
+        aggregation: Type of aggregation ('avg', 'min', 'max', 'sum', 'count')
+        start_date: Optional start date filter
+        end_date: Optional end date filter
+
+    Returns:
+        Aggregate value as float
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT aggregate_tracker_field(%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    category_id,
+                    field_name,
+                    aggregation,
+                    start_date,
+                    end_date
+                )
+            )
+            result = await cur.fetchone()
+            return float(result[0]) if result and result[0] is not None else 0.0
+
+
+async def find_tracker_patterns(
+    user_id: str,
+    category_id: UUID,
+    field_name: str,
+    threshold: float,
+    operator: str = "<",
+    days: int = 30
+) -> List[Dict[str, Any]]:
+    """
+    Find patterns in tracker data (e.g., all days where energy < 5).
+
+    Args:
+        user_id: User ID
+        category_id: Tracker category UUID
+        field_name: Name of field to analyze
+        threshold: Threshold value to compare against
+        operator: Comparison operator ('<', '>', '<=', '>=', '=')
+        days: Number of days to look back
+
+    Returns:
+        List of days matching the pattern with field values and notes
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM find_pattern_days(%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    category_id,
+                    field_name,
+                    threshold,
+                    operator,
+                    days
+                )
+            )
+            return await cur.fetchall()
+
+
+async def find_tracker_correlation(
+    user_id: str,
+    category_id_1: UUID,
+    field_1: str,
+    category_id_2: UUID,
+    field_2: str,
+    days_range: int = 30
+) -> List[Dict[str, Any]]:
+    """
+    Find correlations between two tracker fields.
+
+    Args:
+        user_id: User ID
+        category_id_1: First tracker category UUID
+        field_1: First field name
+        category_id_2: Second tracker category UUID
+        field_2: Second field name
+        days_range: Number of days to analyze
+
+    Returns:
+        List of dates with both field values for correlation analysis
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM find_tracker_correlation(%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    category_id_1,
+                    field_1,
+                    category_id_2,
+                    field_2,
+                    days_range
+                )
+            )
+            return await cur.fetchall()
+
+
+async def get_tracker_entries_by_daterange(
+    user_id: str,
+    category_id: UUID,
+    start_date: datetime,
+    end_date: datetime
+) -> List[Dict[str, Any]]:
+    """
+    Get all tracker entries within a date range.
+
+    Args:
+        user_id: User ID
+        category_id: Tracker category UUID
+        start_date: Start of date range
+        end_date: End of date range
+
+    Returns:
+        List of tracker entries
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM get_tracker_entries_by_daterange(%s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    category_id,
+                    start_date,
+                    end_date
+                )
+            )
+            return await cur.fetchall()
+
+
+async def get_recent_tracker_entries(
+    user_id: str,
+    category_id: UUID,
+    limit: int = 10
+) -> List[Dict[str, Any]]:
+    """
+    Get N most recent entries for a tracker.
+
+    Args:
+        user_id: User ID
+        category_id: Tracker category UUID
+        limit: Maximum number of entries to return
+
+    Returns:
+        List of recent tracker entries
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM get_recent_tracker_entries(%s, %s, %s)
+                """,
+                (
+                    user_id,
+                    category_id,
+                    limit
+                )
+            )
+            return await cur.fetchall()
+
+
+async def get_field_value_distribution(
+    user_id: str,
+    category_id: UUID,
+    field_name: str,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None
+) -> List[Dict[str, Any]]:
+    """
+    Get distribution of values for a field (useful for analytics).
+
+    Args:
+        user_id: User ID
+        category_id: Tracker category UUID
+        field_name: Name of field to analyze
+        start_date: Optional start date filter
+        end_date: Optional end date filter
+
+    Returns:
+        List of dicts with field_value, count, and percentage
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM get_field_value_distribution(%s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    category_id,
+                    field_name,
+                    start_date,
+                    end_date
+                )
+            )
+            return await cur.fetchall()
+
+
 # Reminder operations
 async def create_reminder(reminder: Reminder) -> None:
     """Create new reminder"""
