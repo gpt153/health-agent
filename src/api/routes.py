@@ -2,7 +2,7 @@
 import logging
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from src.api.models import (
@@ -16,6 +16,7 @@ from src.api.models import (
     HealthCheckResponse, ErrorResponse
 )
 from src.api.auth import verify_api_key
+from src.api.middleware import limiter
 from src.agent import get_agent_response
 from src.memory.file_manager import memory_manager
 from src.db.queries import (
@@ -35,7 +36,9 @@ router = APIRouter()
 
 
 @router.post("/api/v1/chat", response_model=ChatResponse)
+@limiter.limit("10/minute")
 async def chat(
+    fastapi_request: Request,
     request: ChatRequest,
     api_key: str = Depends(verify_api_key)
 ):
@@ -43,6 +46,7 @@ async def chat(
     Chat endpoint - sends a message to the agent and gets a response
 
     This endpoint reuses the same agent core that the Telegram bot uses.
+    Rate limit: 10 requests per minute (AI calls are expensive)
     """
     try:
         user_id = request.user_id
@@ -87,11 +91,13 @@ async def chat(
 
 
 @router.post("/api/v1/users", status_code=status.HTTP_201_CREATED)
+@limiter.limit("20/minute")
 async def create_user_endpoint(
+    fastapi_request: Request,
     request: UserProfileRequest,
     api_key: str = Depends(verify_api_key)
 ):
-    """Create a new user"""
+    """Create a new user (Rate limit: 20/minute)"""
     try:
         user_id = request.user_id
 
@@ -124,11 +130,13 @@ async def create_user_endpoint(
 
 
 @router.get("/api/v1/users/{user_id}", response_model=UserProfileResponse)
+@limiter.limit("20/minute")
 async def get_user(
+    fastapi_request: Request,
     user_id: str,
     api_key: str = Depends(verify_api_key)
 ):
-    """Get user profile and preferences"""
+    """Get user profile and preferences (Rate limit: 20/minute)"""
     try:
         if not await user_exists(user_id):
             raise HTTPException(
@@ -172,11 +180,13 @@ async def get_user(
 
 
 @router.delete("/api/v1/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("20/minute")
 async def delete_user(
+    fastapi_request: Request,
     user_id: str,
     api_key: str = Depends(verify_api_key)
 ):
-    """Delete a user (for testing purposes)"""
+    """Delete a user (for testing purposes) (Rate limit: 20/minute)"""
     try:
         if not await user_exists(user_id):
             raise HTTPException(
@@ -204,11 +214,13 @@ async def delete_user(
 
 
 @router.get("/api/v1/users/{user_id}/profile", response_model=dict)
+@limiter.limit("20/minute")
 async def get_user_profile(
+    fastapi_request: Request,
     user_id: str,
     api_key: str = Depends(verify_api_key)
 ):
-    """Get user profile"""
+    """Get user profile (Rate limit: 20/minute)"""
     try:
         if not await user_exists(user_id):
             raise HTTPException(
@@ -238,12 +250,14 @@ async def get_user_profile(
 
 
 @router.patch("/api/v1/users/{user_id}/profile")
+@limiter.limit("20/minute")
 async def update_user_profile(
+    fastapi_request: Request,
     user_id: str,
     request: ProfileUpdateRequest,
     api_key: str = Depends(verify_api_key)
 ):
-    """Update a specific profile field"""
+    """Update a specific profile field (Rate limit: 20/minute)"""
     try:
         if not await user_exists(user_id):
             raise HTTPException(
@@ -270,11 +284,13 @@ async def update_user_profile(
 
 
 @router.get("/api/v1/users/{user_id}/preferences")
+@limiter.limit("20/minute")
 async def get_user_preferences(
+    fastapi_request: Request,
     user_id: str,
     api_key: str = Depends(verify_api_key)
 ):
-    """Get user preferences"""
+    """Get user preferences (Rate limit: 20/minute)"""
     try:
         if not await user_exists(user_id):
             raise HTTPException(
@@ -304,12 +320,14 @@ async def get_user_preferences(
 
 
 @router.patch("/api/v1/users/{user_id}/preferences")
+@limiter.limit("20/minute")
 async def update_user_preferences(
+    fastapi_request: Request,
     user_id: str,
     request: PreferencesUpdateRequest,
     api_key: str = Depends(verify_api_key)
 ):
-    """Update user preferences"""
+    """Update user preferences (Rate limit: 20/minute)"""
     try:
         if not await user_exists(user_id):
             raise HTTPException(
@@ -336,11 +354,13 @@ async def update_user_preferences(
 
 
 @router.delete("/api/v1/users/{user_id}/conversation", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("20/minute")
 async def clear_conversation(
+    fastapi_request: Request,
     user_id: str,
     api_key: str = Depends(verify_api_key)
 ):
-    """Clear conversation history"""
+    """Clear conversation history (Rate limit: 20/minute)"""
     try:
         if not await user_exists(user_id):
             raise HTTPException(
@@ -363,12 +383,14 @@ async def clear_conversation(
 
 
 @router.post("/api/v1/users/{user_id}/food")
+@limiter.limit("20/minute")
 async def log_food(
+    fastapi_request: Request,
     user_id: str,
     request: FoodLogRequest,
     api_key: str = Depends(verify_api_key)
 ):
-    """Log food entry"""
+    """Log food entry (Rate limit: 20/minute)"""
     try:
         if not await user_exists(user_id):
             raise HTTPException(
@@ -408,12 +430,14 @@ async def log_food(
 
 
 @router.get("/api/v1/users/{user_id}/food", response_model=FoodSummaryResponse)
+@limiter.limit("20/minute")
 async def get_food_summary(
+    fastapi_request: Request,
     user_id: str,
     date: Optional[str] = None,
     api_key: str = Depends(verify_api_key)
 ):
-    """Get food summary for a date"""
+    """Get food summary for a date (Rate limit: 20/minute)"""
     try:
         if not await user_exists(user_id):
             raise HTTPException(
@@ -466,12 +490,14 @@ async def get_food_summary(
 
 
 @router.post("/api/v1/users/{user_id}/reminders", response_model=ReminderResponse)
+@limiter.limit("20/minute")
 async def create_reminder_endpoint(
+    fastapi_request: Request,
     user_id: str,
     request: ReminderRequest,
     api_key: str = Depends(verify_api_key)
 ):
-    """Create a reminder"""
+    """Create a reminder (Rate limit: 20/minute)"""
     try:
         if not await user_exists(user_id):
             raise HTTPException(
@@ -535,11 +561,13 @@ async def create_reminder_endpoint(
 
 
 @router.get("/api/v1/users/{user_id}/reminders", response_model=ReminderListResponse)
+@limiter.limit("20/minute")
 async def get_reminders(
+    fastapi_request: Request,
     user_id: str,
     api_key: str = Depends(verify_api_key)
 ):
-    """Get all active reminders for user"""
+    """Get all active reminders for user (Rate limit: 20/minute)"""
     try:
         if not await user_exists(user_id):
             raise HTTPException(
@@ -573,12 +601,14 @@ async def get_reminders(
 
 
 @router.get("/api/v1/users/{user_id}/reminders/{reminder_id}/status", response_model=ReminderStatusResponse)
+@limiter.limit("20/minute")
 async def get_reminder_status(
+    fastapi_request: Request,
     user_id: str,
     reminder_id: str,
     api_key: str = Depends(verify_api_key)
 ):
-    """Check if a reminder has triggered"""
+    """Check if a reminder has triggered (Rate limit: 20/minute)"""
     try:
         if not await user_exists(user_id):
             raise HTTPException(
@@ -635,11 +665,13 @@ async def get_reminder_status(
 
 
 @router.get("/api/v1/users/{user_id}/xp", response_model=XPResponse)
+@limiter.limit("30/minute")
 async def get_xp(
+    fastapi_request: Request,
     user_id: str,
     api_key: str = Depends(verify_api_key)
 ):
-    """Get user XP and level"""
+    """Get user XP and level (Rate limit: 30/minute)"""
     try:
         if not await user_exists(user_id):
             raise HTTPException(
@@ -668,11 +700,13 @@ async def get_xp(
 
 
 @router.get("/api/v1/users/{user_id}/streaks", response_model=StreakResponse)
+@limiter.limit("30/minute")
 async def get_streaks_endpoint(
+    fastapi_request: Request,
     user_id: str,
     api_key: str = Depends(verify_api_key)
 ):
-    """Get user streaks"""
+    """Get user streaks (Rate limit: 30/minute)"""
     try:
         if not await user_exists(user_id):
             raise HTTPException(
@@ -698,11 +732,13 @@ async def get_streaks_endpoint(
 
 
 @router.get("/api/v1/users/{user_id}/achievements", response_model=AchievementResponse)
+@limiter.limit("30/minute")
 async def get_achievements_endpoint(
+    fastapi_request: Request,
     user_id: str,
     api_key: str = Depends(verify_api_key)
 ):
-    """Get user achievements"""
+    """Get user achievements (Rate limit: 30/minute)"""
     try:
         if not await user_exists(user_id):
             raise HTTPException(
@@ -736,8 +772,9 @@ async def get_achievements_endpoint(
 
 
 @router.get("/api/health", response_model=HealthCheckResponse)
-async def health_check():
-    """Health check endpoint"""
+@limiter.limit("60/minute")
+async def health_check(fastapi_request: Request):
+    """Health check endpoint (Rate limit: 60/minute for monitoring systems)"""
     try:
         # Check database connection
         async with db.connection() as conn:
