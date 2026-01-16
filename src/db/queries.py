@@ -11,6 +11,7 @@ from src.models.tracking import TrackingCategory, TrackingEntry
 from src.models.reminder import Reminder
 from src.models.sleep import SleepEntry
 from src.models.sleep_settings import SleepQuizSettings, SleepQuizSubmission
+from src.utils.cache import cache_with_ttl, CacheConfig, invalidate_user_cache
 
 logger = logging.getLogger(__name__)
 
@@ -2864,9 +2865,16 @@ async def update_completion_note(
 # ==========================================
 
 # XP Functions
+@cache_with_ttl(
+    ttl=CacheConfig.GAMIFICATION_TTL,
+    key_prefix="user_xp",
+    include_args=True
+)
 async def get_user_xp_data(user_id: str) -> dict:
     """
-    Get user XP data (creates if doesn't exist)
+    Get user XP data (cached for 5 minutes)
+
+    Creates if doesn't exist. Cache is invalidated when XP is updated.
 
     Returns:
         {
@@ -2937,6 +2945,9 @@ async def update_user_xp(user_id: str, xp_data: dict) -> None:
                 )
             )
             await conn.commit()
+
+    # Invalidate XP cache for this user
+    invalidate_user_cache(user_id)
 
 
 async def add_xp_transaction(
@@ -3080,10 +3091,20 @@ async def update_user_streak(user_id: str, streak_type: str, streak_data: dict, 
             )
             await conn.commit()
 
+    # Invalidate streak cache for this user
+    invalidate_user_cache(user_id)
 
+
+@cache_with_ttl(
+    ttl=CacheConfig.GAMIFICATION_TTL,
+    key_prefix="user_streaks",
+    include_args=True
+)
 async def get_all_user_streaks(user_id: str) -> list[dict]:
     """
-    Get all streaks for user
+    Get all streaks for user (cached for 5 minutes)
+
+    Cache is invalidated when streaks are updated.
 
     Args:
         user_id: User's Telegram ID
@@ -3152,9 +3173,16 @@ async def get_achievement_by_key(key: str) -> Optional[dict]:
             return dict(row) if row else None
 
 
+@cache_with_ttl(
+    ttl=CacheConfig.GAMIFICATION_TTL,
+    key_prefix="user_achievements",
+    include_args=True
+)
 async def get_user_achievement_unlocks(user_id: str) -> list[dict]:
     """
-    Get user's unlocked achievements
+    Get user's unlocked achievements (cached for 5 minutes)
+
+    Cache is invalidated when achievements are unlocked.
 
     Args:
         user_id: User's Telegram ID
@@ -3205,6 +3233,8 @@ async def add_user_achievement(user_id: str, achievement_id: str, progress: Opti
             await conn.commit()
 
             if result:
+                # Invalidate achievement cache for this user
+                invalidate_user_cache(user_id)
                 logger.info(f"User {user_id} unlocked achievement {achievement_id}")
                 return True
             return False
