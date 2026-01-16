@@ -12,6 +12,7 @@ from src.models.reminder import Reminder
 from src.models.sleep import SleepEntry
 from src.models.sleep_settings import SleepQuizSettings, SleepQuizSubmission
 from src.utils.cache import cache_with_ttl, CacheConfig, invalidate_user_cache
+from src.exceptions import QueryError, RecordNotFoundError, wrap_external_exception
 
 logger = logging.getLogger(__name__)
 
@@ -97,14 +98,22 @@ class OnboardingStateDict(TypedDict, total=False):
 # User operations
 async def create_user(telegram_id: str) -> None:
     """Create new user in database"""
-    async with db.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "INSERT INTO users (telegram_id) VALUES (%s) ON CONFLICT (telegram_id) DO NOTHING",
-                (telegram_id,)
-            )
-            await conn.commit()
-    logger.info(f"Created user: {telegram_id}")
+    try:
+        async with db.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO users (telegram_id) VALUES (%s) ON CONFLICT (telegram_id) DO NOTHING",
+                    (telegram_id,)
+                )
+                await conn.commit()
+        logger.info(f"Created user: {telegram_id}")
+    except Exception as e:
+        raise wrap_external_exception(
+            e,
+            operation="create_user",
+            user_id=telegram_id,
+            context={"telegram_id": telegram_id}
+        )
 
 
 async def user_exists(telegram_id: str) -> bool:
@@ -168,25 +177,28 @@ async def update_food_entry(
     Returns:
         dict with old_values, new_values, and success status
     """
-    async with db.connection() as conn:
-        async with conn.cursor() as cur:
-            # First, get the current entry to verify ownership and for audit
-            await cur.execute(
-                """
-                SELECT id, user_id, total_calories, total_macros, foods
-                FROM food_entries
-                WHERE id = %s AND user_id = %s
-                """,
-                (entry_id, user_id)
-            )
-            current_entry = await cur.fetchone()
+    try:
+        async with db.connection() as conn:
+            async with conn.cursor() as cur:
+                # First, get the current entry to verify ownership and for audit
+                await cur.execute(
+                    """
+                    SELECT id, user_id, total_calories, total_macros, foods
+                    FROM food_entries
+                    WHERE id = %s AND user_id = %s
+                    """,
+                    (entry_id, user_id)
+                )
+                current_entry = await cur.fetchone()
 
-            if not current_entry:
-                logger.warning(f"Food entry {entry_id} not found for user {user_id}")
-                return {
-                    "success": False,
-                    "error": "Food entry not found or does not belong to user"
-                }
+                if not current_entry:
+                    raise RecordNotFoundError(
+                        message=f"Food entry {entry_id} not found for user {user_id}",
+                        record_type="FoodEntry",
+                        record_id=entry_id,
+                        user_id=user_id,
+                        operation="update_food_entry"
+                    )
 
             # Store old values for audit
             old_values = {
@@ -262,6 +274,16 @@ async def update_food_entry(
                 },
                 "correction_note": correction_note
             }
+    except RecordNotFoundError:
+        # Re-raise our custom errors
+        raise
+    except Exception as e:
+        raise wrap_external_exception(
+            e,
+            operation="update_food_entry",
+            user_id=user_id,
+            context={"entry_id": entry_id}
+        )
 
 
 async def get_recent_food_entries(user_id: str, limit: int = 10) -> List[FoodEntryDict]:

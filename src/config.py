@@ -268,6 +268,7 @@ RATE_LIMIT_STORAGE_URL = settings.rate_limit_storage_url
 
 
 def validate_config() -> None:
+<<<<<<< HEAD
     """
     Validate configuration (deprecated - validation happens automatically on import).
 
@@ -276,3 +277,22 @@ def validate_config() -> None:
     """
     # Validation happens automatically on Settings instantiation
     pass
+=======
+    """Validate required configuration"""
+    if not TELEGRAM_BOT_TOKEN:
+        raise ConfigurationError(
+            message="TELEGRAM_BOT_TOKEN is required but not set in environment",
+            config_key="TELEGRAM_BOT_TOKEN"
+        )
+    if not ALLOWED_TELEGRAM_IDS or ALLOWED_TELEGRAM_IDS == [""]:
+        raise ConfigurationError(
+            message="ALLOWED_TELEGRAM_IDS is required but not set in environment",
+            config_key="ALLOWED_TELEGRAM_IDS"
+        )
+    if not DATABASE_URL:
+        raise ConfigurationError(
+            message="DATABASE_URL is required but not set in environment",
+            config_key="DATABASE_URL"
+        )
+    # API keys are optional for MVP (using mock vision AI)
+>>>>>>> 0791e62 (Implement standardized error handling system (#71))
