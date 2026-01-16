@@ -66,6 +66,32 @@ async def save_tracking_entry(entry: TrackerEntry) -> None:
     logger.info(f"Saved tracking entry for user {entry.user_id}")
 
 
+async def get_recent_tracker_entries(user_id: str, category_id, limit: int = 10) -> list[dict]:
+    """Get recent tracking entries for a specific tracker"""
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, user_id, category_id, timestamp, data, notes
+                FROM tracking_entries
+                WHERE user_id = %s AND category_id = %s
+                ORDER BY timestamp DESC
+                LIMIT %s
+                """,
+                (user_id, category_id, limit)
+            )
+            rows = await cur.fetchall()
+
+            if not rows:
+                return []
+
+            # Get column names
+            columns = [desc[0] for desc in cur.description]
+
+            # Convert rows to list of dicts
+            return [dict(zip(columns, row)) for row in rows]
+
+
 # Sleep entry operations
 async def save_sleep_entry(entry: SleepEntry) -> None:
     """Save sleep quiz entry to database"""

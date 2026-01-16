@@ -49,6 +49,7 @@ from src.db.queries.tracking import (
     create_tracking_category,
     get_tracking_categories,
     save_tracking_entry,
+    get_recent_tracker_entries,
     save_sleep_entry,
     get_sleep_entries,
 )
