@@ -366,12 +366,12 @@ if __name__ == "__main__":
     # Configure logging
     logging.basicConfig(level=logging.DEBUG)
 
-    print("=" * 60)
-    print("NUTRITION VALIDATION TESTS")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("NUTRITION VALIDATION TESTS")
+    logger.info("=" * 60)
 
     # Test case 1: Small salad at 450 cal (user-reported issue)
-    print("\n1. Small salad at 450 cal (SHOULD FAIL)")
+    logger.info("\n1. Small salad at 450 cal (SHOULD FAIL)")
     result1 = validate_nutrition_estimate(
         food_name="green salad",
         quantity="small",
@@ -380,14 +380,14 @@ if __name__ == "__main__":
         carbs=10,
         fat=35
     )
-    print(f"   Valid: {result1['is_valid']}")
-    print(f"   Confidence: {result1['confidence']}")
-    print(f"   Issues: {result1['issues']}")
-    print(f"   Suggested: {result1['suggested_calories']} kcal")
-    print(f"   Range: {result1['expected_range']}")
+    logger.info(f"   Valid: {result1['is_valid']}")
+    logger.info(f"   Confidence: {result1['confidence']}")
+    logger.info(f"   Issues: {result1['issues']}")
+    logger.info(f"   Suggested: {result1['suggested_calories']} kcal")
+    logger.info(f"   Range: {result1['expected_range']}")
 
     # Test case 2: Chicken breast 170g at 650 cal (user-reported issue)
-    print("\n2. Chicken breast 170g at 650 cal (SHOULD FAIL)")
+    logger.info("\n2. Chicken breast 170g at 650 cal (SHOULD FAIL)")
     result2 = validate_nutrition_estimate(
         food_name="chicken breast",
         quantity="170g",
@@ -396,14 +396,14 @@ if __name__ == "__main__":
         carbs=0,
         fat=45
     )
-    print(f"   Valid: {result2['is_valid']}")
-    print(f"   Confidence: {result2['confidence']}")
-    print(f"   Issues: {result2['issues']}")
-    print(f"   Suggested: {result2['suggested_calories']} kcal")
-    print(f"   Range: {result2['expected_range']}")
+    logger.info(f"   Valid: {result2['is_valid']}")
+    logger.info(f"   Confidence: {result2['confidence']}")
+    logger.info(f"   Issues: {result2['issues']}")
+    logger.info(f"   Suggested: {result2['suggested_calories']} kcal")
+    logger.info(f"   Range: {result2['expected_range']}")
 
     # Test case 3: Chicken breast 170g at 280 cal (reasonable)
-    print("\n3. Chicken breast 170g at 280 cal (SHOULD PASS)")
+    logger.info("\n3. Chicken breast 170g at 280 cal (SHOULD PASS)")
     result3 = validate_nutrition_estimate(
         food_name="chicken breast",
         quantity="170g",
@@ -412,13 +412,13 @@ if __name__ == "__main__":
         carbs=0,
         fat=6
     )
-    print(f"   Valid: {result3['is_valid']}")
-    print(f"   Confidence: {result3['confidence']}")
-    print(f"   Reasoning: {result3['reasoning']}")
-    print(f"   Range: {result3['expected_range']}")
+    logger.info(f"   Valid: {result3['is_valid']}")
+    logger.info(f"   Confidence: {result3['confidence']}")
+    logger.info(f"   Reasoning: {result3['reasoning']}")
+    logger.info(f"   Range: {result3['expected_range']}")
 
     # Test case 4: Medium banana (reasonable)
-    print("\n4. Medium banana at 105 cal (SHOULD PASS)")
+    logger.info("\n4. Medium banana at 105 cal (SHOULD PASS)")
     result4 = validate_nutrition_estimate(
         food_name="banana",
         quantity="medium",
@@ -427,10 +427,10 @@ if __name__ == "__main__":
         carbs=27,
         fat=0.4
     )
-    print(f"   Valid: {result4['is_valid']}")
-    print(f"   Confidence: {result4['confidence']}")
-    print(f"   Reasoning: {result4['reasoning']}")
+    logger.info(f"   Valid: {result4['is_valid']}")
+    logger.info(f"   Confidence: {result4['confidence']}")
+    logger.info(f"   Reasoning: {result4['reasoning']}")
 
-    print("\n" + "=" * 60)
-    print("TESTS COMPLETE")
-    print("=" * 60)
+    logger.info("\n" + "=" * 60)
+    logger.info("TESTS COMPLETE")
+    logger.info("=" * 60)
