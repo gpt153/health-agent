@@ -704,199 +704,35 @@ async def pending_approvals_command(update: Update, context: ContextTypes.DEFAUL
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle text messages"""
+    """
+    Handle text messages - main entry point for message processing.
+
+    This function orchestrates message handling by:
+    1. Validating input and authorization
+    2. Extracting user context
+    3. Routing to appropriate handler
+
+    The actual processing is delegated to specialized handlers.
+    """
+    from src.handlers.message_helpers import validate_message_input, extract_message_context
+    from src.handlers.message_routing import route_message
+
     user_id = str(update.effective_user.id)
-
-    # Check topic filter
-    if not should_process_message(update):
-        return
-
     text = update.message.text
+
     logger.info(f"Message from {user_id}: {text[:50]}...")
 
-    # Check if user is pending activation
-    from src.db.queries import get_user_subscription_status, get_onboarding_state
-    subscription = await get_user_subscription_status(user_id)
-
-    if subscription and subscription['status'] == 'pending':
-        # User is pending, check if message looks like an invite code
-        # Invite codes are typically uppercase alphanumeric, 6-20 chars
-        message_clean = text.strip().upper()
-        if len(message_clean) >= 4 and len(message_clean) <= 50 and message_clean.replace(' ', '').isalnum():
-            # Looks like a code, try to activate
-            await activate(update, context)
-            return
-        else:
-            # Not a code, remind user to activate
-            await update.message.reply_text(
-                "⚠️ **Please activate your account first**\n\n"
-                "Send your invite code to start using the bot.\n\n"
-                "Example: `HEALTH2024`\n\n"
-                "Don't have a code? Use /start to get more information."
-            )
-            return
-
-    # Check if user is in onboarding
-    onboarding = await get_onboarding_state(user_id)
-    if onboarding and not onboarding.get('completed_at'):
-        # Route to onboarding handler
-        await handle_onboarding_message(update, context)
+    # Step 1: Validate input
+    validation = await validate_message_input(update, user_id)
+    if not validation.is_valid:
+        logger.debug(f"Message ignored: {validation.reason}")
         return
 
-    # Check authorization (for active users)
-    if not await is_authorized(user_id):
-        return
+    # Step 2: Extract context
+    msg_context = await extract_message_context(user_id, context)
 
-    # Check if user is entering a custom note
-    if context.user_data.get('awaiting_custom_note'):
-        # Handle cancel command
-        if text.strip().lower() == '/cancel':
-            context.user_data.pop('awaiting_custom_note', None)
-            context.user_data.pop('pending_note', None)
-            await update.message.reply_text("✅ Note entry cancelled.")
-            return
-
-        # Get pending note data
-        pending_note = context.user_data.get('pending_note', {})
-        reminder_id = pending_note.get('reminder_id')
-        scheduled_time = pending_note.get('scheduled_time')
-
-        if not reminder_id or not scheduled_time:
-            await update.message.reply_text("❌ Error: Missing note context. Please try again.")
-            context.user_data.pop('awaiting_custom_note', None)
-            context.user_data.pop('pending_note', None)
-            return
-
-        # Trim note to max 200 characters
-        note_text = text.strip()[:200]
-
-        # Save the note
-        from src.db.queries import update_completion_note
-        try:
-            await update_completion_note(user_id, reminder_id, scheduled_time, note_text)
-            await update.message.reply_text(
-                f"✅ **Note saved!**\n\n📝 \"{note_text}\"\n\nThis will help track patterns over time.",
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.error(f"Error saving custom note: {e}", exc_info=True)
-            await update.message.reply_text("❌ Error saving note. Please try again.")
-
-        # Clean up
-        context.user_data.pop('awaiting_custom_note', None)
-        context.user_data.pop('pending_note', None)
-        return
-
-    # DISABLED: Timezone check commented out for debugging
-    # Check if user has timezone set (first-time setup)
-    # from src.utils.timezone_helper import get_timezone_from_profile, suggest_timezones_for_language, update_timezone_in_profile, normalize_timezone
-    #
-    # user_timezone = get_timezone_from_profile(user_id)
-    # if not user_timezone:
-    #     # Check if message looks like a timezone string (e.g., "America/New_York")
-    #     if '/' in text and len(text.split()) == 1:
-    #         # Normalize timezone (handles case-insensitive input)
-    #         normalized_tz = normalize_timezone(text.strip())
-    #         if normalized_tz:
-    #             # Valid timezone - set it
-    #             if update_timezone_in_profile(user_id, normalized_tz):
-    #                 await update.message.reply_text(
-    #                     f"✅ Great! Your timezone is now set to **{normalized_tz}**.\n\n"
-    #                     f"You can start using the bot normally now!",
-    #                     parse_mode="Markdown"
-    #                 )
-    #                 return
-    #         else:
-    #             # Invalid timezone - show error
-    #             await update.message.reply_text(
-    #                 f"❌ Invalid timezone. Try \"America/New_York\" or share your location.",
-    #                 parse_mode="Markdown"
-    #             )
-    #             return
-    #
-    #     # New user - ask for timezone with smart suggestions
-    #     language_code = update.effective_user.language_code or 'en'
-    #     suggested_timezones = suggest_timezones_for_language(language_code)
-    #
-    #     timezone_list = "\n".join([f"• {tz}" for tz in suggested_timezones[:3]])
-    #
-    #     await update.message.reply_text(
-    #         f"👋 **Welcome! Let's set up your timezone first.**\n\n"
-    #         f"Based on your language ({language_code}), I suggest:\n{timezone_list}\n\n"
-    #         f"**Two ways to set your timezone:**\n"
-    #         f"1️⃣ Share your location (📎 → Location) - I'll detect it automatically\n"
-    #         f"2️⃣ Reply with your timezone (e.g., \"Europe/Stockholm\", \"America/New_York\")\n\n"
-    #         f"This helps me give you accurate time-based responses!",
-    #         parse_mode="Markdown"
-    #     )
-    #     return
-
-    # Get AI response using PydanticAI agent
-    try:
-        # Use persistent typing indicator during LLM processing
-        from src.utils.typing_indicator import PersistentTypingIndicator
-
-        async with PersistentTypingIndicator(update.message.chat):
-            # Load conversation history from database (auto-filters unhelpful "I don't know" responses)
-            message_history = await get_conversation_history(user_id, limit=20)
-
-            # Route query to appropriate model (Haiku for simple, Sonnet for complex)
-            from src.utils.query_router import query_router
-            model_choice, routing_reason = query_router.route_query(text)
-
-            # Select model based on routing
-            model_override = None
-            if model_choice == "haiku":
-                model_override = "anthropic:claude-3-5-haiku-latest"
-                logger.info(f"[ROUTER] Using Haiku for fast response: {routing_reason}")
-
-            # Get agent response with conversation history
-            # Pass context.application for approval notifications
-            response = await get_agent_response(
-                user_id, text, memory_manager, reminder_manager, message_history,
-                bot_application=context.application,
-                model_override=model_override
-            )
-
-        # Save user message and assistant response to database
-        await save_conversation_message(user_id, "user", text, message_type="text")
-        await save_conversation_message(user_id, "assistant", response, message_type="text")
-
-        # Move Mem0 and auto-save to background tasks (don't block response)
-        async def background_memory_tasks():
-            """Run memory operations in background after response is sent"""
-            # Add to Mem0 for semantic memory and automatic fact extraction
-            mem0_manager.add_message(user_id, text, role="user", metadata={"message_type": "text"})
-            mem0_manager.add_message(user_id, response, role="assistant", metadata={"message_type": "text"})
-
-            # Auto-save: Extract and save any personal information from the conversation
-            logger.info(f"[DEBUG-FLOW] BEFORE auto_save_user_info for user {user_id}")
-            logger.info(f"[DEBUG-FLOW] User message: {text[:100]}")
-            logger.info(f"[DEBUG-FLOW] Agent response: {response[:100]}")
-            await auto_save_user_info(user_id, text, response)
-            logger.info(f"[DEBUG-FLOW] AFTER auto_save_user_info completed successfully")
-
-        # Schedule background task (fire and forget)
-        import asyncio
-        asyncio.create_task(background_memory_tasks())
-
-        # Send response - try with Markdown first, fallback to plain text if parsing fails
-        try:
-            await update.message.reply_text(response, parse_mode="Markdown")
-            logger.info(f"Sent AI response to {user_id}")
-        except telegram.error.BadRequest as e:
-            if "can't parse entities" in str(e).lower():
-                # Markdown parsing failed, send as plain text
-                logger.warning(f"Markdown parse error, sending as plain text: {e}")
-                await update.message.reply_text(response)
-            else:
-                raise
-
-    except Exception as e:
-        logger.error(f"Error in handle_message: {e}", exc_info=True)
-        await update.message.reply_text(
-            "Sorry, I encountered an error. Please try again!"
-        )
+    # Step 3: Route to handler
+    await route_message(update, context, msg_context, text)
 
 
 async def _validate_photo_input(update: Update) -> tuple[bool, str]:
