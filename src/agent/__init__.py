@@ -1422,6 +1422,13 @@ async def get_daily_food_summary(
     """
     Get summary of food intake for a specific date (calories and macros)
 
+    IMPORTANT: When presenting results to user, ALWAYS show ALL macros:
+    - Total calories
+    - Protein (g)
+    - Carbs (g)
+    - Fat (g)
+    Never show just protein alone - always include carbs and fat too.
+
     Args:
         date: Date in "YYYY-MM-DD" format (defaults to today)
 
@@ -1744,6 +1751,23 @@ async def log_food_from_text_validated(
         await save_food_entry(entry)
         logger.info(f"Saved validated text food entry for {deps.telegram_id}")
 
+        # Process gamification (XP, streaks, achievements)
+        gamification_msg = ""
+        try:
+            from src.gamification.integrations import handle_food_entry_gamification
+            meal_type_for_gamification = meal_type or "snack"
+            gamification_result = await handle_food_entry_gamification(
+                user_id=deps.telegram_id,
+                food_entry_id=entry.id,
+                logged_at=entry.timestamp,
+                meal_type=meal_type_for_gamification
+            )
+            if gamification_result.get('message'):
+                gamification_msg = f"\n\n🎯 **PROGRESS**\n{gamification_result['message']}"
+        except Exception as e:
+            logger.warning(f"[GAMIFICATION] Failed to process gamification: {e}")
+            # Continue - gamification shouldn't block food logging
+
         # Trigger habit detection for food patterns
         from src.memory.habit_extractor import habit_extractor
         try:
@@ -1813,6 +1837,10 @@ async def log_food_from_text_validated(
                 message_parts.append(f"• {q}")
 
         message = "\n".join(message_parts)
+
+        # Append gamification message if available
+        if gamification_msg:
+            message += gamification_msg
 
         return FoodEntryValidatedResult(
             success=True,
