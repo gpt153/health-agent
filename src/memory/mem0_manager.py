@@ -3,6 +3,7 @@ import logging
 import os
 from typing import Optional, List, Dict, Any
 from mem0 import Memory
+from src.exceptions import Mem0APIError, ConfigurationError
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,10 @@ class Mem0Manager:
             openai_key = os.getenv("OPENAI_API_KEY")
 
             if not openai_key:
-                raise ValueError("OPENAI_API_KEY required for embeddings")
+                raise ConfigurationError(
+                    message="OPENAI_API_KEY required for Mem0 embeddings",
+                    config_key="OPENAI_API_KEY"
+                )
 
             # Parse database URL
             # Format: postgresql://user:pass@host:port/dbname
@@ -67,8 +71,12 @@ class Mem0Manager:
             self._initialized = True
             logger.info("✅ Mem0 initialized successfully with PostgreSQL+pgvector backend")
 
+        except ConfigurationError:
+            # Re-raise configuration errors
+            raise
         except Exception as e:
             logger.error(f"❌ Failed to initialize Mem0: {e}")
+            # Graceful degradation - don't crash, just disable Mem0
             self.memory = None
             self._initialized = False
 

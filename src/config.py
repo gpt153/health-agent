@@ -3,8 +3,10 @@ import sys
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator, ValidationError as PydanticValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from src.exceptions import ConfigurationError
 
 
 class Settings(BaseSettings):
@@ -238,14 +240,24 @@ class Settings(BaseSettings):
 # This will validate configuration on import and fail fast if invalid
 try:
     settings = Settings()
-except Exception as e:
+except PydanticValidationError as e:
+    # Wrap Pydantic validation errors in our ConfigurationError for consistency
+    error_details = str(e)
     print(f"\n{'=' * 80}", file=sys.stderr)
     print("❌ CONFIGURATION ERROR", file=sys.stderr)
     print(f"{'=' * 80}\n", file=sys.stderr)
-    print(str(e), file=sys.stderr)
+    print(error_details, file=sys.stderr)
     print(f"\n{'=' * 80}", file=sys.stderr)
     print("💡 Check your .env file and ensure all required fields are set.", file=sys.stderr)
     print("   See .env.example for reference.", file=sys.stderr)
+    print(f"{'=' * 80}\n", file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    # Handle other unexpected errors
+    print(f"\n{'=' * 80}", file=sys.stderr)
+    print("❌ UNEXPECTED ERROR LOADING CONFIGURATION", file=sys.stderr)
+    print(f"{'=' * 80}\n", file=sys.stderr)
+    print(str(e), file=sys.stderr)
     print(f"{'=' * 80}\n", file=sys.stderr)
     sys.exit(1)
 

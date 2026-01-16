@@ -6,6 +6,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from src.config import DATABASE_URL
+from src.exceptions import ConnectionError as DBConnectionError, wrap_external_exception
 
 logger = logging.getLogger(__name__)
 
@@ -19,30 +20,61 @@ class Database:
 
     async def init_pool(self) -> None:
         """Initialize connection pool"""
-        logger.info("Initializing database connection pool")
-        self._pool = AsyncConnectionPool(
-            self.connection_string,
-            min_size=2,
-            max_size=10,
-            open=False
-        )
-        await self._pool.open()
+        try:
+            logger.info("Initializing database connection pool")
+            self._pool = AsyncConnectionPool(
+                self.connection_string,
+                min_size=2,
+                max_size=10,
+                open=False
+            )
+            await self._pool.open()
+        except psycopg.OperationalError as e:
+            raise DBConnectionError(
+                message=f"Failed to initialize database pool: {str(e)}",
+                operation="init_pool",
+                cause=e
+            )
+        except Exception as e:
+            raise wrap_external_exception(
+                e,
+                operation="init_pool"
+            )
 
     async def close_pool(self) -> None:
         """Close connection pool"""
         if self._pool:
-            logger.info("Closing database connection pool")
-            await self._pool.close()
+            try:
+                logger.info("Closing database connection pool")
+                await self._pool.close()
+            except Exception as e:
+                logger.error(f"Error closing database pool: {e}", exc_info=True)
+                # Don't raise on close, just log
 
     @asynccontextmanager
     async def connection(self) -> AsyncGenerator[psycopg.AsyncConnection, None]:
         """Get database connection from pool"""
         if not self._pool:
-            raise RuntimeError("Database pool not initialized")
+            raise DBConnectionError(
+                message="Database pool not initialized. Call init_pool() first.",
+                operation="get_connection"
+            )
 
-        async with self._pool.connection() as conn:
-            conn.row_factory = dict_row
-            yield conn
+        try:
+            async with self._pool.connection() as conn:
+                conn.row_factory = dict_row
+                yield conn
+        except psycopg.OperationalError as e:
+            raise DBConnectionError(
+                message=f"Failed to get database connection: {str(e)}",
+                operation="get_connection",
+                cause=e
+            )
+        except Exception as e:
+            raise wrap_external_exception(
+                e,
+                operation="get_connection"
+            )
 
 
 # Global database instance
