@@ -3,8 +3,10 @@ import sys
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator, ValidationError as PydanticValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from src.exceptions import ConfigurationError
 
 
 class Settings(BaseSettings):
@@ -238,14 +240,24 @@ class Settings(BaseSettings):
 # This will validate configuration on import and fail fast if invalid
 try:
     settings = Settings()
-except Exception as e:
+except PydanticValidationError as e:
+    # Wrap Pydantic validation errors in our ConfigurationError for consistency
+    error_details = str(e)
     print(f"\n{'=' * 80}", file=sys.stderr)
     print("❌ CONFIGURATION ERROR", file=sys.stderr)
     print(f"{'=' * 80}\n", file=sys.stderr)
-    print(str(e), file=sys.stderr)
+    print(error_details, file=sys.stderr)
     print(f"\n{'=' * 80}", file=sys.stderr)
     print("💡 Check your .env file and ensure all required fields are set.", file=sys.stderr)
     print("   See .env.example for reference.", file=sys.stderr)
+    print(f"{'=' * 80}\n", file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    # Handle other unexpected errors
+    print(f"\n{'=' * 80}", file=sys.stderr)
+    print("❌ UNEXPECTED ERROR LOADING CONFIGURATION", file=sys.stderr)
+    print(f"{'=' * 80}\n", file=sys.stderr)
+    print(str(e), file=sys.stderr)
     print(f"{'=' * 80}\n", file=sys.stderr)
     sys.exit(1)
 
@@ -268,7 +280,6 @@ RATE_LIMIT_STORAGE_URL = settings.rate_limit_storage_url
 
 
 def validate_config() -> None:
-<<<<<<< HEAD
     """
     Validate configuration (deprecated - validation happens automatically on import).
 
@@ -277,22 +288,3 @@ def validate_config() -> None:
     """
     # Validation happens automatically on Settings instantiation
     pass
-=======
-    """Validate required configuration"""
-    if not TELEGRAM_BOT_TOKEN:
-        raise ConfigurationError(
-            message="TELEGRAM_BOT_TOKEN is required but not set in environment",
-            config_key="TELEGRAM_BOT_TOKEN"
-        )
-    if not ALLOWED_TELEGRAM_IDS or ALLOWED_TELEGRAM_IDS == [""]:
-        raise ConfigurationError(
-            message="ALLOWED_TELEGRAM_IDS is required but not set in environment",
-            config_key="ALLOWED_TELEGRAM_IDS"
-        )
-    if not DATABASE_URL:
-        raise ConfigurationError(
-            message="DATABASE_URL is required but not set in environment",
-            config_key="DATABASE_URL"
-        )
-    # API keys are optional for MVP (using mock vision AI)
->>>>>>> 0791e62 (Implement standardized error handling system (#71))
