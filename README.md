@@ -95,17 +95,60 @@ src/
 
 See `.env.example` for all available configuration options.
 
-**Required:**
-- `TELEGRAM_BOT_TOKEN` - ✅ Already configured
-- `ALLOWED_TELEGRAM_IDS` - ⚠️ **ADD YOUR USER ID HERE**
-- `DATABASE_URL` - ✅ Already configured
+### Configuration Validation
+
+This project uses **Pydantic Settings** for comprehensive configuration validation. The application will **fail fast at startup** if your configuration is invalid, with clear error messages explaining what needs to be fixed.
+
+**Required Fields:**
+- `TELEGRAM_BOT_TOKEN` - ✅ Already configured (format validated: must be `123456:ABC-DEF...`)
+- `ALLOWED_TELEGRAM_IDS` - ⚠️ **ADD YOUR USER ID HERE** (must be numeric, comma-separated)
+- `DATABASE_URL` - ✅ Already configured (format validated: must be valid PostgreSQL URL)
+- **API Keys** - Required based on your model selection:
+  - If using `openai:` models → `OPENAI_API_KEY` required
+  - If using `anthropic:` models → `ANTHROPIC_API_KEY` required
+
+**Optional Fields (with defaults):**
+- `LOG_LEVEL` - One of: DEBUG, INFO, WARNING, ERROR, CRITICAL (default: INFO)
+- `RUN_MODE` - One of: bot, api, both (default: bot)
+- `API_PORT` - Must be 1-65535 (default: 8080)
+- `DATA_PATH` - Storage directory (default: ./data)
+
+### Validation Examples
+
+**✅ Valid configuration loads successfully:**
+```bash
+python -m src.main
+# ✅ Configuration validated successfully
+# Starting bot...
+```
+
+**❌ Invalid configuration fails with helpful errors:**
+```bash
+# Missing API key for selected model:
+❌ VISION_MODEL is set to 'openai:gpt-4o-mini' but OPENAI_API_KEY is not set.
+   Get your API key at: https://platform.openai.com/api-keys
+
+# Invalid port range:
+❌ API_PORT must be between 1 and 65535
+
+# Invalid Telegram ID:
+❌ Invalid Telegram ID 'abc123'. Telegram IDs must be numeric (e.g., 123456789).
+   Get your ID from @userinfobot on Telegram.
+```
 
 ## 🐛 Troubleshooting
 
+**Configuration error on startup?**
+- Read the error message carefully - it tells you exactly what's wrong
+- Check `.env.example` for the correct format
+- Ensure all required fields are set based on your model selection
+
 **Bot not responding?**
-- Check your user ID is in `ALLOWED_TELEGRAM_IDS`
+- Check your user ID is in `ALLOWED_TELEGRAM_IDS` and is numeric
 - Make sure PostgreSQL is running: `docker compose ps`
+- Verify your Telegram bot token format is correct
 
 **Database connection error?**
 - PostgreSQL is running on localhost:5432
 - Check with: `docker compose logs postgres`
+- Ensure DATABASE_URL starts with `postgresql://` or `postgres://`

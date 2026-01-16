@@ -1,6 +1,7 @@
 # AI Framework
 pydantic-ai>=0.0.14
 pydantic>=2.0.0
+pydantic-settings>=2.0.0
 
 # Telegram Bot
 python-telegram-bot[job-queue]>=22.5
