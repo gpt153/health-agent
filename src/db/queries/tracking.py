@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 from datetime import datetime
 from src.db.connection import db
-from src.models.tracking import TrackingCategory, TrackingEntry
+from src.models.tracking import TrackingCategory, TrackerEntry
 from src.models.sleep import SleepEntry
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ async def get_tracking_categories(user_id: str, active_only: bool = True) -> lis
             return await cur.fetchall()
 
 
-async def save_tracking_entry(entry: TrackingEntry) -> None:
+async def save_tracking_entry(entry: TrackerEntry) -> None:
     """Save tracking entry"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
