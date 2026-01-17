@@ -1115,6 +1115,27 @@ async def _save_food_entry_with_habits(
     await save_food_entry(entry)
     logger.info(f"Saved food entry for {user_id}")
 
+    # Generate and store image embedding for visual search (Epic 009 - Phase 1)
+    # This runs in the background and doesn't block the user experience
+    try:
+        from src.services.visual_food_search import get_visual_search_service
+        visual_search = get_visual_search_service()
+
+        # Store embedding asynchronously (will be generated automatically)
+        # Using entry.id from the saved entry
+        import asyncio
+        asyncio.create_task(
+            visual_search.store_image_embedding(
+                food_entry_id=str(entry.id),
+                user_id=user_id,
+                photo_path=str(photo_path)
+            )
+        )
+        logger.info(f"[VISUAL_SEARCH] Queued embedding generation for entry {entry.id}")
+    except Exception as e:
+        logger.warning(f"[VISUAL_SEARCH] Failed to queue embedding: {e}")
+        # Continue - visual search shouldn't block food logging
+
     # Trigger habit detection for food patterns
     from src.memory.habit_extractor import habit_extractor
     try:
