@@ -1,8 +1,10 @@
 """Tracking and sleep entry database queries"""
 import json
 import logging
+import asyncio
 from typing import Optional
 from datetime import datetime
+from uuid import UUID
 from src.db.connection import db
 from src.models.tracking import TrackingCategory, TrackerEntry
 from src.models.sleep import SleepEntry
@@ -45,9 +47,20 @@ async def get_tracking_categories(user_id: str, active_only: bool = True) -> lis
 
 
 async def save_tracking_entry(entry: TrackerEntry) -> None:
-    """Save tracking entry"""
+    """Save tracking entry and create health_event"""
+    category_name = None
+
     async with db.connection() as conn:
         async with conn.cursor() as cur:
+            # First get category name for metadata
+            await cur.execute(
+                "SELECT name FROM tracking_categories WHERE id = %s",
+                (entry.category_id,)
+            )
+            category_row = await cur.fetchone()
+            category_name = category_row["name"] if category_row else "Unknown"
+
+            # Save tracking entry
             await cur.execute(
                 """
                 INSERT INTO tracking_entries (id, user_id, category_id, timestamp, data, notes)
@@ -63,7 +76,45 @@ async def save_tracking_entry(entry: TrackerEntry) -> None:
                 )
             )
             await conn.commit()
+
     logger.info(f"Saved tracking entry for user {entry.user_id}")
+
+    # Create health event in background (non-blocking)
+    if category_name:
+        asyncio.create_task(_create_tracker_health_event(entry, category_name))
+
+
+async def _create_tracker_health_event(entry: TrackerEntry, category_name: str):
+    """
+    Background task to create health event for tracker entry.
+
+    This runs asynchronously after the main tracking_entry is saved.
+    """
+    try:
+        from src.services.health_events import create_health_event
+
+        metadata = {
+            "category_name": category_name,
+            "category_id": str(entry.category_id),
+            "data": entry.data,
+            "notes": entry.notes
+        }
+
+        await create_health_event(
+            user_id=entry.user_id,
+            event_type="tracker",
+            timestamp=entry.timestamp,
+            metadata=metadata,
+            source_table="tracking_entries",
+            source_id=entry.id
+        )
+        logger.debug(f"Created health_event for tracking_entry {entry.id}")
+
+    except Exception as e:
+        logger.error(
+            f"Failed to create health_event for tracking_entry {entry.id}",
+            exc_info=True
+        )
 
 
 async def get_recent_tracker_entries(user_id: str, category_id, limit: int = 10) -> list[dict]:
@@ -94,7 +145,7 @@ async def get_recent_tracker_entries(user_id: str, category_id, limit: int = 10)
 
 # Sleep entry operations
 async def save_sleep_entry(entry: SleepEntry) -> None:
-    """Save sleep quiz entry to database"""
+    """Save sleep quiz entry to database and create health_event"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -122,7 +173,53 @@ async def save_sleep_entry(entry: SleepEntry) -> None:
                 )
             )
             await conn.commit()
+
     logger.info(f"Saved sleep entry for user {entry.user_id}")
+
+    # Create health event in background (non-blocking)
+    asyncio.create_task(_create_sleep_health_event(entry))
+
+
+async def _create_sleep_health_event(entry: SleepEntry):
+    """
+    Background task to create health event for sleep entry.
+
+    This runs asynchronously after the main sleep_entry is saved.
+    """
+    try:
+        from src.services.health_events import create_health_event
+
+        metadata = {
+            "bedtime": str(entry.bedtime),
+            "wake_time": str(entry.wake_time),
+            "sleep_latency_minutes": entry.sleep_latency_minutes,
+            "total_sleep_hours": entry.total_sleep_hours,
+            "night_wakings": entry.night_wakings,
+            "sleep_quality_rating": entry.sleep_quality_rating,
+            "disruptions": entry.disruptions,
+            "phone_usage": entry.phone_usage,
+            "phone_duration_minutes": entry.phone_duration_minutes,
+            "alertness_rating": entry.alertness_rating
+        }
+
+        # Parse entry.id to UUID if it's a string
+        entry_id = UUID(entry.id) if isinstance(entry.id, str) else entry.id
+
+        await create_health_event(
+            user_id=entry.user_id,
+            event_type="sleep",
+            timestamp=entry.logged_at,
+            metadata=metadata,
+            source_table="sleep_entries",
+            source_id=entry_id
+        )
+        logger.debug(f"Created health_event for sleep_entry {entry.id}")
+
+    except Exception as e:
+        logger.error(
+            f"Failed to create health_event for sleep_entry {entry.id}",
+            exc_info=True
+        )
 
 
 async def get_sleep_entries(user_id: str, days: int = 7) -> list[dict]:

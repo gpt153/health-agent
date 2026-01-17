@@ -1,8 +1,10 @@
 """Food entry database queries"""
 import json
 import logging
+import asyncio
 from typing import Optional
 from datetime import datetime
+from uuid import UUID
 from src.db.connection import db
 from src.models.food import FoodEntry
 
@@ -11,7 +13,9 @@ logger = logging.getLogger(__name__)
 
 # Food entry operations
 async def save_food_entry(entry: FoodEntry) -> None:
-    """Save food entry to database"""
+    """Save food entry to database and create health_event"""
+    food_entry_id = None
+
     async with db.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -32,8 +36,51 @@ async def save_food_entry(entry: FoodEntry) -> None:
                     entry.notes
                 )
             )
+            food_entry_id = entry.id  # Use the entry.id since we're inserting it
             await conn.commit()
+
     logger.info(f"Saved food entry {entry.id} for user {entry.user_id}")
+
+    # Create health event in background (non-blocking)
+    if food_entry_id:
+        asyncio.create_task(_create_food_health_event(entry, food_entry_id))
+
+
+async def _create_food_health_event(entry: FoodEntry, food_entry_id: UUID):
+    """
+    Background task to create health event for food entry.
+
+    This runs asynchronously after the main food_entry is saved, so it doesn't
+    block the user-facing transaction. If event creation fails, it logs the error
+    but doesn't affect the main flow.
+    """
+    try:
+        from src.services.health_events import create_health_event
+
+        metadata = {
+            "meal_type": entry.meal_type,
+            "total_calories": entry.total_calories,
+            "total_macros": entry.total_macros.model_dump(),
+            "foods": [f.model_dump() for f in entry.foods],
+            "photo_path": entry.photo_path,
+            "notes": entry.notes
+        }
+
+        await create_health_event(
+            user_id=entry.user_id,
+            event_type="meal",
+            timestamp=entry.timestamp,
+            metadata=metadata,
+            source_table="food_entries",
+            source_id=food_entry_id
+        )
+        logger.debug(f"Created health_event for food_entry {food_entry_id}")
+
+    except Exception as e:
+        logger.error(
+            f"Failed to create health_event for food_entry {food_entry_id}",
+            exc_info=True
+        )
 
 
 async def update_food_entry(
