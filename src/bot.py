@@ -1136,6 +1136,72 @@ async def _save_food_entry_with_habits(
         logger.warning(f"[VISUAL_SEARCH] Failed to queue embedding: {e}")
         # Continue - visual search shouldn't block food logging
 
+    # Detect and recognize plates for calibration (Epic 009 - Phase 2)
+    # This runs in the background and doesn't block the user experience
+    try:
+        from src.services.plate_recognition import get_plate_recognition_service
+        from src.models.plate import PlateMetadata
+
+        plate_service = get_plate_recognition_service()
+
+        async def detect_and_link_plate():
+            """Background task to detect and link plate"""
+            try:
+                # Detect plate from image
+                detected_plate = await plate_service.detect_plate_from_image(
+                    str(photo_path),
+                    user_id
+                )
+
+                if detected_plate:
+                    # Try to match against user's existing plates
+                    matched_plate = await plate_service.match_plate(
+                        detected_plate.embedding,
+                        user_id,
+                        threshold=0.85
+                    )
+
+                    # Register new plate if no match found
+                    if not matched_plate:
+                        matched_plate = await plate_service.register_new_plate(
+                            user_id,
+                            detected_plate.embedding,
+                            detected_plate.metadata
+                        )
+                        logger.info(
+                            f"[PLATE_RECOGNITION] Registered new plate: {matched_plate.plate_name}"
+                        )
+
+                    # Link food entry to plate
+                    await plate_service.link_food_entry_to_plate(
+                        food_entry_id=str(entry.id),
+                        recognized_plate_id=matched_plate.id,
+                        user_id=user_id,
+                        confidence_score=detected_plate.confidence,
+                        detection_method="auto_detected"
+                    )
+
+                    logger.info(
+                        f"[PLATE_RECOGNITION] Linked entry {entry.id} to plate {matched_plate.plate_name} "
+                        f"(confidence: {detected_plate.confidence:.2f})"
+                    )
+
+                    # If user provided accurate portions and plate is not calibrated,
+                    # we could potentially calibrate here (future enhancement)
+
+            except Exception as e:
+                logger.warning(f"[PLATE_RECOGNITION] Background plate detection failed: {e}")
+                # Failures in plate recognition shouldn't affect food logging
+
+        # Queue plate detection in background
+        import asyncio
+        asyncio.create_task(detect_and_link_plate())
+        logger.info(f"[PLATE_RECOGNITION] Queued plate detection for entry {entry.id}")
+
+    except Exception as e:
+        logger.warning(f"[PLATE_RECOGNITION] Failed to queue plate detection: {e}")
+        # Continue - plate recognition shouldn't block food logging
+
     # Trigger habit detection for food patterns
     from src.memory.habit_extractor import habit_extractor
     try:
