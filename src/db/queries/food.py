@@ -17,10 +17,11 @@ async def save_food_entry(entry: FoodEntry) -> None:
             await cur.execute(
                 """
                 INSERT INTO food_entries
-                (user_id, timestamp, photo_path, foods, total_calories, total_macros, meal_type, notes)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                (id, user_id, timestamp, photo_path, foods, total_calories, total_macros, meal_type, notes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
+                    str(entry.id),  # Include the UUID from the entry
                     entry.user_id,
                     entry.timestamp,
                     entry.photo_path,
@@ -32,7 +33,7 @@ async def save_food_entry(entry: FoodEntry) -> None:
                 )
             )
             await conn.commit()
-    logger.info(f"Saved food entry for user {entry.user_id}")
+    logger.info(f"Saved food entry {entry.id} for user {entry.user_id}")
 
 
 async def update_food_entry(
