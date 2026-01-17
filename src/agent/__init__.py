@@ -250,12 +250,24 @@ class DynamicToolCreationResult(BaseModel):
     approval_id: Optional[str] = None
 
 
+# Import memory tools (Epic 009 - Phase 7)
+from src.agent.tools.memory_tools import (
+    search_food_images,
+    get_food_formula,
+    get_health_patterns,
+)
+
 # Initialize agent with model from config
 agent = Agent(
     model=AGENT_MODEL,
     system_prompt="",  # Will be dynamically set per conversation
     deps_type=AgentDeps,
 )
+
+# Register memory tools (Epic 009 - Phase 7)
+agent.tool(search_food_images)
+agent.tool(get_food_formula)
+agent.tool(get_health_patterns)
 
 
 @agent.tool
