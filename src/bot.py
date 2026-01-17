@@ -956,6 +956,39 @@ async def _analyze_and_validate_nutrition(
     Returns:
         tuple: (validated_analysis, validation_warnings, verified_foods)
     """
+    # Epic 009 - Phase 4: Find similar reference image and generate portion comparison context
+    portion_context = None
+    try:
+        from src.services.portion_comparison import get_portion_comparison_service
+        portion_service = get_portion_comparison_service()
+
+        # Find reference image for comparison
+        reference = await portion_service.find_reference_image(
+            str(photo_path), user_id
+        )
+
+        if reference:
+            reference_photo, reference_entry_id, reference_date = reference
+            logger.info(f"[PORTION] Found reference image for comparison: {reference_photo}")
+
+            # Detect plate (if possible)
+            from src.services.plate_recognition import get_plate_recognition_service
+            plate_service = get_plate_recognition_service()
+            detected_plate = await plate_service.detect_plate_from_image(
+                str(photo_path), user_id, auto_match=True
+            )
+
+            # For now, we'll generate comparison after Vision AI analysis
+            # Store reference info for later use
+            portion_context = {
+                'reference_photo': reference_photo,
+                'reference_entry_id': reference_entry_id,
+                'reference_date': reference_date,
+                'plate': detected_plate
+            }
+    except Exception as e:
+        logger.warning(f"[PORTION] Failed to find reference image: {e}")
+
     # Analyze with vision AI (with all enhanced context)
     analysis = await analyze_food_photo(
         str(photo_path),
@@ -965,6 +998,7 @@ async def _analyze_and_validate_nutrition(
         semantic_context=mem0_context,
         food_history=food_history_context,
         food_habits=habit_context
+        # Note: portion_comparison_context will be added in Phase 4C after full integration
     )
 
     # Verify nutrition data with USDA database
