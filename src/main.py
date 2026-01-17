@@ -44,6 +44,12 @@ async def run_telegram_bot() -> None:
             logger.info("Loading sleep quiz schedules...")
             await reminder_manager.load_sleep_quiz_schedules()
 
+        # Schedule pattern mining jobs (Epic 009 - Phase 6)
+        logger.info("Scheduling pattern mining jobs...")
+        from src.scheduler.pattern_mining import PatternMiningScheduler
+        pattern_scheduler = PatternMiningScheduler(app)
+        await pattern_scheduler.schedule_pattern_mining()
+
         await app.updater.start_polling()
 
         # Keep running until interrupted
