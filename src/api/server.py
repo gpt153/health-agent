@@ -35,6 +35,10 @@ async def lifespan(app: FastAPI):
     from src.observability.metrics import init_metrics
     init_metrics()
 
+    # Initialize tracing (psycopg already instrumented in main.py)
+    from src.observability.tracing import auto_instrument_fastapi
+    auto_instrument_fastapi(app)
+
     yield
 
     # Shutdown

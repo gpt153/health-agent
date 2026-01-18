@@ -88,6 +88,11 @@ async def main() -> None:
         # Initialize observability first (before any errors can occur)
         init_sentry()
 
+        # Initialize distributed tracing
+        from src.observability.tracing import init_tracing, auto_instrument_psycopg
+        init_tracing()
+        auto_instrument_psycopg()
+
         # Validate configuration
         logger.info("Validating configuration...")
         validate_config()
@@ -145,6 +150,8 @@ async def main() -> None:
         await stop_metrics_collector()
 
         # Shutdown observability (flush any pending events)
+        from src.observability.tracing import shutdown_tracing
+        shutdown_tracing()
         shutdown_sentry()
 
         logger.info("Shutdown complete")
