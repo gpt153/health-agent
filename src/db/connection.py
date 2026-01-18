@@ -6,7 +6,8 @@ from typing import AsyncGenerator, Optional
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
-from src.config import DATABASE_URL
+from src.config import DATABASE_URL, ENABLE_PROMETHEUS
+from src.exceptions import ConnectionError as DBConnectionError, wrap_external_exception
 
 logger = logging.getLogger(__name__)
 
@@ -41,34 +42,76 @@ class Database:
 
     async def init_pool(self) -> None:
         """Initialize connection pool with dynamic sizing"""
-        min_size, max_size = calculate_pool_size()
+        try:
+            min_size, max_size = calculate_pool_size()
 
-        logger.info(f"Initializing database connection pool (min={min_size}, max={max_size})")
-        self._pool = AsyncConnectionPool(
-            self.connection_string,
-            min_size=min_size,
-            max_size=max_size,
-            open=False
-        )
-        await self._pool.open()
-
-        logger.info("✅ Database connection pool initialized")
+            logger.info(f"Initializing database connection pool (min={min_size}, max={max_size})")
+            self._pool = AsyncConnectionPool(
+                self.connection_string,
+                min_size=min_size,
+                max_size=max_size,
+                open=False
+            )
+            await self._pool.open()
+            logger.info("✅ Database connection pool initialized")
+        except psycopg.OperationalError as e:
+            raise DBConnectionError(
+                message=f"Failed to initialize database pool: {str(e)}",
+                operation="init_pool",
+                cause=e
+            )
+        except Exception as e:
+            raise wrap_external_exception(
+                e,
+                operation="init_pool"
+            )
 
     async def close_pool(self) -> None:
         """Close connection pool"""
         if self._pool:
-            logger.info("Closing database connection pool")
-            await self._pool.close()
+            try:
+                logger.info("Closing database connection pool")
+                await self._pool.close()
+            except Exception as e:
+                logger.error(f"Error closing database pool: {e}", exc_info=True)
+                # Don't raise on close, just log
 
     @asynccontextmanager
     async def connection(self) -> AsyncGenerator[psycopg.AsyncConnection, None]:
         """Get database connection from pool"""
         if not self._pool:
-            raise RuntimeError("Database pool not initialized")
+            raise DBConnectionError(
+                message="Database pool not initialized. Call init_pool() first.",
+                operation="get_connection"
+            )
 
-        async with self._pool.connection() as conn:
-            conn.row_factory = dict_row
-            yield conn
+        # Update pool metrics
+        if ENABLE_PROMETHEUS:
+            try:
+                from src.monitoring import update_pool_metrics
+                pool_stats = self._pool.get_stats()
+                update_pool_metrics(
+                    total=pool_stats.get('pool_size', 0),
+                    available=pool_stats.get('pool_available', 0)
+                )
+            except Exception as e:
+                logger.debug(f"Failed to update pool metrics: {e}")
+
+        try:
+            async with self._pool.connection() as conn:
+                conn.row_factory = dict_row
+                yield conn
+        except psycopg.OperationalError as e:
+            raise DBConnectionError(
+                message=f"Failed to get database connection: {str(e)}",
+                operation="get_connection",
+                cause=e
+            )
+        except Exception as e:
+            raise wrap_external_exception(
+                e,
+                operation="get_connection"
+            )
 
     def get_pool_stats(self) -> dict:
         """

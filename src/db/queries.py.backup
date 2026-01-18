@@ -1,34 +1,140 @@
-"""Database queries with performance profiling"""
+"""Database queries"""
 import json
 import logging
-from typing import Optional
+from functools import wraps
+from typing import Optional, Dict, List, Any, TypedDict
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, date
 from src.db.connection import db
 from src.models.user import UserProfile
 from src.models.food import FoodEntry
-from src.models.tracking import TrackingCategory, TrackingEntry
+from src.models.tracking import TrackingCategory, TrackerEntry
 from src.models.reminder import Reminder
 from src.models.sleep import SleepEntry
 from src.models.sleep_settings import SleepQuizSettings, SleepQuizSubmission
-from src.utils.profiling import profile_query
+from src.utils.cache import cache_with_ttl, CacheConfig, invalidate_user_cache
+from src.exceptions import QueryError, RecordNotFoundError, wrap_external_exception
+from src.config import ENABLE_PROMETHEUS
 
 logger = logging.getLogger(__name__)
 
 
+# TypedDict classes for complex return types
+class FoodEntryDict(TypedDict, total=False):
+    """Type definition for food entry database record"""
+    id: str
+    user_id: str
+    timestamp: datetime
+    photo_path: Optional[str]
+    foods: List[Dict[str, Any]]
+    total_calories: int
+    total_macros: Dict[str, float]
+    meal_type: Optional[str]
+    notes: Optional[str]
+
+
+class UpdateFoodEntryResult(TypedDict, total=False):
+    """Result of updating a food entry"""
+    success: bool
+    old_values: Dict[str, Any]
+    new_values: Dict[str, Any]
+    entry_id: str
+    correction_note: Optional[str]
+    error: str
+
+
+class ConversationMessage(TypedDict):
+    """Type definition for conversation history message"""
+    role: str
+    content: str
+    message_type: str
+    metadata: Optional[Dict[str, Any]]
+    timestamp: datetime
+
+
+class PendingApprovalDict(TypedDict):
+    """Type definition for pending tool approval"""
+    approval_id: str
+    tool_id: str
+    requested_by: str
+    request_message: str
+    created_at: datetime
+    tool_name: str
+    tool_type: str
+    description: str
+
+
+class InviteCodeDict(TypedDict):
+    """Type definition for invite code"""
+    id: str
+    code: str
+    max_uses: int
+    uses_count: int
+    tier: str
+    trial_days: int
+    expires_at: Optional[datetime]
+    active: bool
+    is_master_code: bool
+    description: Optional[str]
+
+
+class SubscriptionStatusDict(TypedDict, total=False):
+    """Type definition for user subscription status"""
+    tier: str
+    trial_ends_at: Optional[datetime]
+    subscription_ends_at: Optional[datetime]
+    is_trial: bool
+    is_active: bool
+
+
+class OnboardingStateDict(TypedDict, total=False):
+    """Type definition for onboarding state"""
+    user_id: str
+    onboarding_path: str
+    current_step: str
+    step_data: Dict[str, Any]
+    completed_at: Optional[datetime]
+    created_at: datetime
+
+
+def track_query(query_type: str, table: str = ""):
+    """Decorator to track database query metrics"""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            if ENABLE_PROMETHEUS:
+                from src.monitoring import track_database_query
+                with track_database_query(query_type, table):
+                    return await func(*args, **kwargs)
+            else:
+                return await func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
 # User operations
+@track_query("INSERT", "users")
 async def create_user(telegram_id: str) -> None:
     """Create new user in database"""
-    async with db.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "INSERT INTO users (telegram_id) VALUES (%s) ON CONFLICT (telegram_id) DO NOTHING",
-                (telegram_id,)
-            )
-            await conn.commit()
-    logger.info(f"Created user: {telegram_id}")
+    try:
+        async with db.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO users (telegram_id) VALUES (%s) ON CONFLICT (telegram_id) DO NOTHING",
+                    (telegram_id,)
+                )
+                await conn.commit()
+        logger.info(f"Created user: {telegram_id}")
+    except Exception as e:
+        raise wrap_external_exception(
+            e,
+            operation="create_user",
+            user_id=telegram_id,
+            context={"telegram_id": telegram_id}
+        )
 
 
+@track_query("SELECT", "users")
 async def user_exists(telegram_id: str) -> bool:
     """Check if user exists"""
     async with db.connection() as conn:
@@ -41,6 +147,7 @@ async def user_exists(telegram_id: str) -> bool:
 
 
 # Food entry operations
+@track_query("INSERT", "food_entries")
 async def save_food_entry(entry: FoodEntry) -> None:
     """Save food entry to database"""
     async with db.connection() as conn:
@@ -70,11 +177,11 @@ async def update_food_entry(
     entry_id: str,
     user_id: str,
     total_calories: Optional[int] = None,
-    total_macros: Optional[dict] = None,
-    foods: Optional[list] = None,
+    total_macros: Optional[Dict[str, float]] = None,
+    foods: Optional[List[Dict[str, Any]]] = None,
     correction_note: Optional[str] = None,
     corrected_by: str = "user"
-) -> dict:
+) -> UpdateFoodEntryResult:
     """
     Update an existing food entry with corrections
 
@@ -90,25 +197,28 @@ async def update_food_entry(
     Returns:
         dict with old_values, new_values, and success status
     """
-    async with db.connection() as conn:
-        async with conn.cursor() as cur:
-            # First, get the current entry to verify ownership and for audit
-            await cur.execute(
-                """
-                SELECT id, user_id, total_calories, total_macros, foods
-                FROM food_entries
-                WHERE id = %s AND user_id = %s
-                """,
-                (entry_id, user_id)
-            )
-            current_entry = await cur.fetchone()
+    try:
+        async with db.connection() as conn:
+            async with conn.cursor() as cur:
+                # First, get the current entry to verify ownership and for audit
+                await cur.execute(
+                    """
+                    SELECT id, user_id, total_calories, total_macros, foods
+                    FROM food_entries
+                    WHERE id = %s AND user_id = %s
+                    """,
+                    (entry_id, user_id)
+                )
+                current_entry = await cur.fetchone()
 
-            if not current_entry:
-                logger.warning(f"Food entry {entry_id} not found for user {user_id}")
-                return {
-                    "success": False,
-                    "error": "Food entry not found or does not belong to user"
-                }
+                if not current_entry:
+                    raise RecordNotFoundError(
+                        message=f"Food entry {entry_id} not found for user {user_id}",
+                        record_type="FoodEntry",
+                        record_id=entry_id,
+                        user_id=user_id,
+                        operation="update_food_entry"
+                    )
 
             # Store old values for audit
             old_values = {
@@ -184,9 +294,19 @@ async def update_food_entry(
                 },
                 "correction_note": correction_note
             }
+    except RecordNotFoundError:
+        # Re-raise our custom errors
+        raise
+    except Exception as e:
+        raise wrap_external_exception(
+            e,
+            operation="update_food_entry",
+            user_id=user_id,
+            context={"entry_id": entry_id}
+        )
 
 
-async def get_recent_food_entries(user_id: str, limit: int = 10) -> list[dict]:
+async def get_recent_food_entries(user_id: str, limit: int = 10) -> List[FoodEntryDict]:
     """Get recent food entries for user"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -225,7 +345,7 @@ async def create_tracking_category(category: TrackingCategory) -> None:
     logger.info(f"Created tracking category: {category.name} for user {category.user_id}")
 
 
-async def get_tracking_categories(user_id: str, active_only: bool = True) -> list[dict]:
+async def get_tracking_categories(user_id: str, active_only: bool = True) -> List[Dict[str, Any]]:
     """Get tracking categories for user"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -236,7 +356,7 @@ async def get_tracking_categories(user_id: str, active_only: bool = True) -> lis
             return await cur.fetchall()
 
 
-async def save_tracking_entry(entry: TrackingEntry) -> None:
+async def save_tracking_entry(entry: TrackerEntry) -> None:
     """Save tracking entry"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -256,6 +376,274 @@ async def save_tracking_entry(entry: TrackingEntry) -> None:
             )
             await conn.commit()
     logger.info(f"Saved tracking entry for user {entry.user_id}")
+
+
+# Advanced Tracker Query Functions (Epic 006 - Phase 3)
+
+async def query_tracker_entries(
+    user_id: str,
+    category_id: UUID,
+    field_name: str,
+    operator: str,
+    value: Any,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None
+) -> List[Dict[str, Any]]:
+    """
+    Query tracker entries by field value using PostgreSQL function.
+
+    Args:
+        user_id: User ID
+        category_id: Tracker category UUID
+        field_name: Name of field to query
+        operator: Comparison operator ('=', '>', '<', '>=', '<=', 'contains', 'in')
+        value: Value to compare against
+        start_date: Optional start date filter
+        end_date: Optional end date filter
+
+    Returns:
+        List of matching tracker entries
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM query_tracker_entries(%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    category_id,
+                    field_name,
+                    operator,
+                    json.dumps(value) if not isinstance(value, str) else json.dumps([value]),
+                    start_date,
+                    end_date
+                )
+            )
+            return await cur.fetchall()
+
+
+async def get_tracker_aggregates(
+    user_id: str,
+    category_id: UUID,
+    field_name: str,
+    aggregation: str,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None
+) -> float:
+    """
+    Get aggregate statistics for a tracker field.
+
+    Args:
+        user_id: User ID
+        category_id: Tracker category UUID
+        field_name: Name of field to aggregate
+        aggregation: Type of aggregation ('avg', 'min', 'max', 'sum', 'count')
+        start_date: Optional start date filter
+        end_date: Optional end date filter
+
+    Returns:
+        Aggregate value as float
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT aggregate_tracker_field(%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    category_id,
+                    field_name,
+                    aggregation,
+                    start_date,
+                    end_date
+                )
+            )
+            result = await cur.fetchone()
+            return float(result[0]) if result and result[0] is not None else 0.0
+
+
+async def find_tracker_patterns(
+    user_id: str,
+    category_id: UUID,
+    field_name: str,
+    threshold: float,
+    operator: str = "<",
+    days: int = 30
+) -> List[Dict[str, Any]]:
+    """
+    Find patterns in tracker data (e.g., all days where energy < 5).
+
+    Args:
+        user_id: User ID
+        category_id: Tracker category UUID
+        field_name: Name of field to analyze
+        threshold: Threshold value to compare against
+        operator: Comparison operator ('<', '>', '<=', '>=', '=')
+        days: Number of days to look back
+
+    Returns:
+        List of days matching the pattern with field values and notes
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM find_pattern_days(%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    category_id,
+                    field_name,
+                    threshold,
+                    operator,
+                    days
+                )
+            )
+            return await cur.fetchall()
+
+
+async def find_tracker_correlation(
+    user_id: str,
+    category_id_1: UUID,
+    field_1: str,
+    category_id_2: UUID,
+    field_2: str,
+    days_range: int = 30
+) -> List[Dict[str, Any]]:
+    """
+    Find correlations between two tracker fields.
+
+    Args:
+        user_id: User ID
+        category_id_1: First tracker category UUID
+        field_1: First field name
+        category_id_2: Second tracker category UUID
+        field_2: Second field name
+        days_range: Number of days to analyze
+
+    Returns:
+        List of dates with both field values for correlation analysis
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM find_tracker_correlation(%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    category_id_1,
+                    field_1,
+                    category_id_2,
+                    field_2,
+                    days_range
+                )
+            )
+            return await cur.fetchall()
+
+
+async def get_tracker_entries_by_daterange(
+    user_id: str,
+    category_id: UUID,
+    start_date: datetime,
+    end_date: datetime
+) -> List[Dict[str, Any]]:
+    """
+    Get all tracker entries within a date range.
+
+    Args:
+        user_id: User ID
+        category_id: Tracker category UUID
+        start_date: Start of date range
+        end_date: End of date range
+
+    Returns:
+        List of tracker entries
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM get_tracker_entries_by_daterange(%s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    category_id,
+                    start_date,
+                    end_date
+                )
+            )
+            return await cur.fetchall()
+
+
+async def get_recent_tracker_entries(
+    user_id: str,
+    category_id: UUID,
+    limit: int = 10
+) -> List[Dict[str, Any]]:
+    """
+    Get N most recent entries for a tracker.
+
+    Args:
+        user_id: User ID
+        category_id: Tracker category UUID
+        limit: Maximum number of entries to return
+
+    Returns:
+        List of recent tracker entries
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM get_recent_tracker_entries(%s, %s, %s)
+                """,
+                (
+                    user_id,
+                    category_id,
+                    limit
+                )
+            )
+            return await cur.fetchall()
+
+
+async def get_field_value_distribution(
+    user_id: str,
+    category_id: UUID,
+    field_name: str,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None
+) -> List[Dict[str, Any]]:
+    """
+    Get distribution of values for a field (useful for analytics).
+
+    Args:
+        user_id: User ID
+        category_id: Tracker category UUID
+        field_name: Name of field to analyze
+        start_date: Optional start date filter
+        end_date: Optional end date filter
+
+    Returns:
+        List of dicts with field_value, count, and percentage
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM get_field_value_distribution(%s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    category_id,
+                    field_name,
+                    start_date,
+                    end_date
+                )
+            )
+            return await cur.fetchall()
 
 
 # Reminder operations
@@ -281,7 +669,7 @@ async def create_reminder(reminder: Reminder) -> None:
     logger.info(f"Created reminder for user {reminder.user_id}")
 
 
-async def get_active_reminders(user_id: str) -> list[dict]:
+async def get_active_reminders(user_id: str) -> List[Dict[str, Any]]:
     """Get active reminders for user"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -292,7 +680,7 @@ async def get_active_reminders(user_id: str) -> list[dict]:
             return await cur.fetchall()
 
 
-async def get_active_reminders_all() -> list[dict]:
+async def get_active_reminders_all() -> List[Dict[str, Any]]:
     """Get all active reminders for all users"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -302,7 +690,7 @@ async def get_active_reminders_all() -> list[dict]:
             return await cur.fetchall()
 
 
-async def find_duplicate_reminders(user_id: Optional[str] = None) -> list[dict]:
+async def find_duplicate_reminders(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Find duplicate reminders (same user, message, time, timezone)
 
@@ -522,9 +910,7 @@ async def save_conversation_message(
 ) -> None:
     """
     Save a message to conversation history
-
-    Invalidates conversation history cache for this user.
-
+    
     Args:
         user_id: Telegram user ID
         role: 'user' or 'assistant'
@@ -532,8 +918,6 @@ async def save_conversation_message(
         message_type: 'text', 'photo', 'reminder', 'voice', etc.
         metadata: Additional context (photo analysis, etc.)
     """
-    from src.cache.redis_client import get_cache
-
     async with db.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -545,25 +929,13 @@ async def save_conversation_message(
             )
             await conn.commit()
 
-    # Invalidate conversation history cache (all limits for this user)
-    cache = get_cache()
-    if cache:
-        await cache.delete_pattern(f"conversation_history:{user_id}:*")
-        logger.debug(f"Conversation history cache invalidated: {user_id}")
-
 
 async def get_conversation_history(
     user_id: str,
     limit: int = 20
-) -> list[dict]:
+) -> List[ConversationMessage]:
     """
     Get recent conversation history for a user
-
-    With Redis caching (30min TTL):
-    - Check cache first (keyed by user_id and limit)
-    - Query database on cache miss
-    - Cache results for subsequent requests
-    - Invalidated when new messages are saved
 
     Args:
         user_id: Telegram user ID
@@ -572,34 +944,20 @@ async def get_conversation_history(
     Returns:
         List of messages in format: [{"role": "user", "content": "..."}]
     """
-    from src.cache.redis_client import get_cache
-
-    cache = get_cache()
-    cache_key = f"conversation_history:{user_id}:{limit}"
-
-    # Try cache first
-    if cache:
-        cached = await cache.get(cache_key)
-        if cached:
-            logger.debug(f"Conversation history loaded from cache: {user_id}")
-            return cached
-
-    # Cache miss - query database with profiling
-    async with profile_query("get_conversation_history", threshold_ms=50):
-        async with db.connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    """
-                    SELECT role, content, message_type, metadata, timestamp
-                    FROM conversation_history
-                    WHERE user_id = %s
-                    ORDER BY timestamp DESC
-                    LIMIT %s
-                    """,
-                    (user_id, limit)
-                )
-                rows = await cur.fetchall()
-
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT role, content, message_type, metadata, timestamp
+                FROM conversation_history
+                WHERE user_id = %s
+                ORDER BY timestamp DESC
+                LIMIT %s
+                """,
+                (user_id, limit)
+            )
+            rows = await cur.fetchall()
+    
     # Reverse to get chronological order (oldest first)
     # Filter out unhelpful "I don't know" responses to keep history clean
     unhelpful_phrases = [
@@ -625,11 +983,6 @@ async def get_conversation_history(
             "role": row["role"],
             "content": row["content"]
         })
-
-    # Cache for 30 minutes
-    if cache:
-        await cache.set(cache_key, messages, ttl=1800)
-        logger.debug(f"Conversation history cached (30min TTL): {user_id}")
 
     return messages
 
@@ -812,7 +1165,7 @@ async def save_dynamic_tool(
     return tool_id
 
 
-async def get_all_enabled_tools() -> list[dict]:
+async def get_all_enabled_tools() -> List[Dict[str, Any]]:
     """Get all enabled dynamic tools"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -1039,7 +1392,7 @@ async def reject_tool(
     logger.info(f"Rejected tool creation request {approval_id}")
 
 
-async def get_pending_approvals() -> list[dict]:
+async def get_pending_approvals() -> List[PendingApprovalDict]:
     """Get all pending tool approval requests"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -1096,7 +1449,7 @@ async def create_invite_code(
             return str(result['id'])
 
 
-async def validate_invite_code(code: str) -> Optional[dict]:
+async def validate_invite_code(code: str) -> Optional[InviteCodeDict]:
     """
     Validate an invite code and return its details if valid
     Returns None if code is invalid, expired, or used up
@@ -1220,7 +1573,7 @@ async def use_invite_code(code: str, telegram_id: str) -> bool:
             return True
 
 
-async def get_user_subscription_status(telegram_id: str) -> Optional[dict]:
+async def get_user_subscription_status(telegram_id: str) -> Optional[SubscriptionStatusDict]:
     """Get user's subscription status"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -1250,7 +1603,7 @@ async def get_user_subscription_status(telegram_id: str) -> Optional[dict]:
             }
 
 
-async def get_master_codes() -> list:
+async def get_master_codes() -> List[InviteCodeDict]:
     """Get all active master codes"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -1299,7 +1652,7 @@ async def deactivate_invite_code(code: str) -> bool:
 # Onboarding State Management
 # ==========================================
 
-async def get_onboarding_state(user_id: str) -> Optional[dict]:
+async def get_onboarding_state(user_id: str) -> Optional[OnboardingStateDict]:
     """Get current onboarding state for user"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -1490,7 +1843,7 @@ async def save_sleep_entry(entry: SleepEntry) -> None:
     logger.info(f"Saved sleep entry for user {entry.user_id}")
 
 
-async def get_sleep_entries(user_id: str, days: int = 7) -> list[dict]:
+async def get_sleep_entries(user_id: str, days: int = 7) -> List[Dict[str, Any]]:
     """Get recent sleep entries for user"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -2540,7 +2893,7 @@ async def check_missed_reminder_grace_period(user_id: str, reminder_id: str, sch
 # Phase 4: Gamification Functions
 # ========================================
 
-async def get_all_achievements() -> list[dict]:
+async def get_all_achievements() -> List[Dict[str, Any]]:
     """Get all achievement definitions"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -2574,7 +2927,7 @@ async def get_all_achievements() -> list[dict]:
             return achievements
 
 
-async def get_user_achievements(user_id: str) -> list[dict]:
+async def get_user_achievements(user_id: str) -> List[Dict[str, Any]]:
     """Get all achievements unlocked by user"""
     async with db.connection() as conn:
         async with conn.cursor() as cur:
@@ -2822,9 +3175,16 @@ async def update_completion_note(
 # ==========================================
 
 # XP Functions
+@cache_with_ttl(
+    ttl=CacheConfig.GAMIFICATION_TTL,
+    key_prefix="user_xp",
+    include_args=True
+)
 async def get_user_xp_data(user_id: str) -> dict:
     """
-    Get user XP data (creates if doesn't exist)
+    Get user XP data (cached for 5 minutes)
+
+    Creates if doesn't exist. Cache is invalidated when XP is updated.
 
     Returns:
         {
@@ -2895,6 +3255,9 @@ async def update_user_xp(user_id: str, xp_data: dict) -> None:
                 )
             )
             await conn.commit()
+
+    # Invalidate XP cache for this user
+    invalidate_user_cache(user_id)
 
 
 async def add_xp_transaction(
@@ -2979,7 +3342,7 @@ async def get_user_streak(user_id: str, streak_type: str, source_id: Optional[st
                 SELECT id, user_id, streak_type, source_id, current_streak, best_streak,
                        last_activity_date, freeze_days_remaining, created_at, updated_at
                 FROM user_streaks
-                WHERE user_id = %s AND streak_type = %s AND (source_id = %s OR (source_id IS NULL AND %s IS NULL))
+                WHERE user_id = %s AND streak_type = %s AND (source_id = %s OR (source_id IS NULL AND %s::text IS NULL))
                 """,
                 (user_id, streak_type, source_id, source_id)
             )
@@ -3023,7 +3386,7 @@ async def update_user_streak(user_id: str, streak_type: str, streak_data: dict, 
                     last_activity_date = %s,
                     freeze_days_remaining = %s,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE user_id = %s AND streak_type = %s AND (source_id = %s OR (source_id IS NULL AND %s IS NULL))
+                WHERE user_id = %s AND streak_type = %s AND (source_id = %s OR (source_id IS NULL AND %s::text IS NULL))
                 """,
                 (
                     streak_data['current_streak'],
@@ -3038,10 +3401,20 @@ async def update_user_streak(user_id: str, streak_type: str, streak_data: dict, 
             )
             await conn.commit()
 
+    # Invalidate streak cache for this user
+    invalidate_user_cache(user_id)
 
+
+@cache_with_ttl(
+    ttl=CacheConfig.GAMIFICATION_TTL,
+    key_prefix="user_streaks",
+    include_args=True
+)
 async def get_all_user_streaks(user_id: str) -> list[dict]:
     """
-    Get all streaks for user
+    Get all streaks for user (cached for 5 minutes)
+
+    Cache is invalidated when streaks are updated.
 
     Args:
         user_id: User's Telegram ID
@@ -3066,7 +3439,7 @@ async def get_all_user_streaks(user_id: str) -> list[dict]:
 
 
 # Achievement Functions
-async def get_all_achievements() -> list[dict]:
+async def get_all_achievements() -> List[Dict[str, Any]]:
     """
     Get all achievement definitions
 
@@ -3110,9 +3483,16 @@ async def get_achievement_by_key(key: str) -> Optional[dict]:
             return dict(row) if row else None
 
 
+@cache_with_ttl(
+    ttl=CacheConfig.GAMIFICATION_TTL,
+    key_prefix="user_achievements",
+    include_args=True
+)
 async def get_user_achievement_unlocks(user_id: str) -> list[dict]:
     """
-    Get user's unlocked achievements
+    Get user's unlocked achievements (cached for 5 minutes)
+
+    Cache is invalidated when achievements are unlocked.
 
     Args:
         user_id: User's Telegram ID
@@ -3163,6 +3543,8 @@ async def add_user_achievement(user_id: str, achievement_id: str, progress: Opti
             await conn.commit()
 
             if result:
+                # Invalidate achievement cache for this user
+                invalidate_user_cache(user_id)
                 logger.info(f"User {user_id} unlocked achievement {achievement_id}")
                 return True
             return False
@@ -3194,7 +3576,7 @@ async def has_user_unlocked_achievement(user_id: str, achievement_id: str) -> bo
 
 
 # Aliases for consistency with old mock_store API
-async def get_user_achievements(user_id: str) -> list[dict]:
+async def get_user_achievements(user_id: str) -> List[Dict[str, Any]]:
     """Alias for get_user_achievement_unlocks"""
     return await get_user_achievement_unlocks(user_id)
 
@@ -3228,7 +3610,7 @@ async def get_user_xp_level(user_id: str) -> dict:
     }
 
 
-async def get_user_streaks(user_id: str) -> list[dict]:
+async def get_user_streaks(user_id: str) -> List[Dict[str, Any]]:
     """
     Wrapper for API compatibility - alias to get_all_user_streaks
 

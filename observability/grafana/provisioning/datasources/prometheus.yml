@@ -1,0 +1,70 @@
+# Grafana datasource provisioning for Prometheus
+#
+# This file automatically configures Prometheus as a datasource in Grafana
+# when Grafana starts up.
+
+apiVersion: 1
+
+# List of datasources to insert/update
+datasources:
+  # Prometheus datasource
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+
+    # URL of Prometheus server (Docker service name)
+    url: http://prometheus:9090
+
+    # Basic auth disabled
+    basicAuth: false
+
+    # Make this the default datasource
+    isDefault: true
+
+    # Database
+    database: ""
+
+    # User
+    user: ""
+
+    # JSON data for datasource-specific settings
+    jsonData:
+      # HTTP method for queries
+      httpMethod: POST
+
+      # Query timeout
+      queryTimeout: 60s
+
+      # Time interval
+      timeInterval: 15s
+
+      # Exemplars enabled (for trace integration)
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: jaeger
+
+    # Make datasource editable in UI
+    editable: true
+
+    # Version
+    version: 1
+
+  # Jaeger datasource for distributed tracing
+  - name: Jaeger
+    type: jaeger
+    access: proxy
+
+    # URL of Jaeger query service
+    url: http://jaeger:16686
+
+    # UID for linking from Prometheus
+    uid: jaeger
+
+    # Basic auth disabled
+    basicAuth: false
+
+    # Make datasource editable in UI
+    editable: true
+
+    # Version
+    version: 1

@@ -6,6 +6,9 @@
 -- 2. Food entries date range index
 -- 3. Reminders scheduling index
 -- 4. Active users lookup index
+-- 5. Gamification XP queries
+-- 6. Food entries analytics
+-- 7-10. Additional indexes from main branch
 --
 -- Expected improvements:
 -- - Conversation history: 50-80% faster
@@ -121,6 +124,27 @@ COMMENT ON INDEX idx_food_entries_user_name IS
 
 
 -- ==========================================
+-- Additional indexes from main branch
+-- ==========================================
+
+-- Food entries date range queries (full timestamp index for non-partial queries)
+CREATE INDEX IF NOT EXISTS idx_food_entries_user_timestamp
+ON food_entries(user_id, timestamp DESC);
+
+-- Gamification analytics (XP tracking, leaderboards, achievement progress)
+CREATE INDEX IF NOT EXISTS idx_xp_transactions_user_source
+ON xp_transactions(user_id, source_type);
+
+-- Chat history pagination (created_at based queries)
+CREATE INDEX IF NOT EXISTS idx_conversation_user_created
+ON conversation_history(user_id, created_at DESC);
+
+-- Tracking trend analysis (habit tracking, progress reports)
+CREATE INDEX IF NOT EXISTS idx_tracking_user_category_time
+ON tracking_entries(user_id, category_id, timestamp DESC);
+
+
+-- ==========================================
 -- Index Statistics & Verification
 -- ==========================================
 -- Query to check index usage after deployment:
@@ -161,3 +185,7 @@ COMMENT ON INDEX idx_food_entries_user_name IS
 -- DROP INDEX IF EXISTS idx_users_telegram_id_active;
 -- DROP INDEX IF EXISTS idx_user_gamification_xp_desc;
 -- DROP INDEX IF EXISTS idx_food_entries_user_name;
+-- DROP INDEX IF EXISTS idx_food_entries_user_timestamp;
+-- DROP INDEX IF EXISTS idx_xp_transactions_user_source;
+-- DROP INDEX IF EXISTS idx_conversation_user_created;
+-- DROP INDEX IF EXISTS idx_tracking_user_category_time;

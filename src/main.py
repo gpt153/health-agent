@@ -2,10 +2,11 @@
 import logging
 import asyncio
 import os
-from src.config import validate_config, LOG_LEVEL
+from src.config import validate_config, LOG_LEVEL, ENABLE_SENTRY
 from src.db.connection import db
 from src.bot import create_bot_application
 from src.agent.dynamic_tools import tool_manager
+from src.observability.sentry_config import init_sentry, shutdown_sentry
 
 # Configure logging
 logging.basicConfig(
@@ -14,6 +15,12 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+# Initialize Sentry monitoring early (for startup errors)
+if ENABLE_SENTRY:
+    from src.monitoring import init_sentry
+    init_sentry()
+    logger.info("Sentry monitoring initialized (early)")
 
 
 async def run_telegram_bot() -> None:
@@ -37,6 +44,12 @@ async def run_telegram_bot() -> None:
             # Load sleep quiz schedules
             logger.info("Loading sleep quiz schedules...")
             await reminder_manager.load_sleep_quiz_schedules()
+
+        # Schedule pattern mining jobs (Epic 009 - Phase 6)
+        logger.info("Scheduling pattern mining jobs...")
+        from src.scheduler.pattern_mining import PatternMiningScheduler
+        pattern_scheduler = PatternMiningScheduler(app)
+        await pattern_scheduler.schedule_pattern_mining()
 
         await app.updater.start_polling()
 
@@ -84,6 +97,14 @@ async def run_api_server() -> None:
 async def main() -> None:
     """Main application entry point"""
     try:
+        # Initialize observability first (before any errors can occur)
+        init_sentry()
+
+        # Initialize distributed tracing
+        from src.observability.tracing import init_tracing, auto_instrument_psycopg
+        init_tracing()
+        auto_instrument_psycopg()
+
         # Validate configuration
         logger.info("Validating configuration...")
         validate_config()
@@ -98,13 +119,41 @@ async def main() -> None:
         from src.config import REDIS_URL, ENABLE_CACHE
         await init_cache(REDIS_URL, enabled=ENABLE_CACHE)
 
+        # Initialize resilience components
+        logger.info("Initializing resilience components...")
+
+        # Initialize local nutrition cache (SQLite)
+        from src.db.nutrition_cache import init_nutrition_cache
+        try:
+            init_nutrition_cache()
+            logger.info("✓ Nutrition cache initialized with common foods")
+        except Exception as e:
+            logger.error(f"Failed to initialize nutrition cache: {e}", exc_info=True)
+
+        # Start Prometheus metrics server
+        from prometheus_client import start_http_server
+        from src.config import METRICS_PORT
+        try:
+            start_http_server(METRICS_PORT)
+            logger.info(f"✓ Prometheus metrics exposed on :{METRICS_PORT}/metrics")
+        except Exception as e:
+            logger.warning(f"Failed to start metrics server: {e}")
+
         # Load dynamic tools from database
         logger.info("Loading dynamic tools...")
         loaded_tools = await tool_manager.load_all_tools()
         logger.info(f"Loaded {len(loaded_tools)} dynamic tools: {', '.join(loaded_tools) if loaded_tools else 'none'}")
 
-        # Determine run mode from environment
+        # Initialize metrics (only for bot mode, API initializes in its own lifespan)
         run_mode = os.getenv("RUN_MODE", "bot").lower()
+        if run_mode in ("bot", "both"):
+            from src.observability.metrics import init_metrics
+            from src.observability.metrics_collector import start_metrics_collector
+            init_metrics()
+            # Start background metrics collector
+            await start_metrics_collector(interval=60)
+
+        # Determine run mode from environment
 
         if run_mode == "both":
             # Run both bot and API in parallel
@@ -133,6 +182,16 @@ async def main() -> None:
     finally:
         logger.info("Closing database connection...")
         await db.close_pool()
+
+        # Stop metrics collector
+        from src.observability.metrics_collector import stop_metrics_collector
+        await stop_metrics_collector()
+
+        # Shutdown observability (flush any pending events)
+        from src.observability.tracing import shutdown_tracing
+        shutdown_tracing()
+        shutdown_sentry()
+
         logger.info("Shutdown complete")
 
 

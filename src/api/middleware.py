@@ -1,5 +1,6 @@
 """API middleware for rate limiting, CORS, and performance monitoring"""
 import logging
+import uuid
 import time
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -8,11 +9,15 @@ from fastapi import Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 import os
+from src.config import ENABLE_PROMETHEUS, ENABLE_SENTRY
+
+from src.config import RATE_LIMIT_STORAGE_URL
 
 logger = logging.getLogger(__name__)
 
-# Initialize rate limiter
-limiter = Limiter(key_func=get_remote_address)
+# Initialize rate limiter with configurable storage
+# For production, set RATE_LIMIT_STORAGE_URL=redis://localhost:6379
+limiter = Limiter(key_func=get_remote_address, storage_uri=RATE_LIMIT_STORAGE_URL)
 
 # Performance tracking
 request_count = 0
@@ -82,7 +87,8 @@ def setup_rate_limiting(app):
     """Configure rate limiting"""
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-    logger.info("Rate limiting configured: 100/minute per IP")
+    storage_type = "Redis" if "redis" in RATE_LIMIT_STORAGE_URL else "Memory"
+    logger.info(f"Rate limiting configured with {storage_type} storage")
 
 
 def setup_performance_monitoring(app):
@@ -92,3 +98,66 @@ def setup_performance_monitoring(app):
         f"Performance monitoring enabled "
         f"(slow request threshold: {slow_request_threshold_ms}ms)"
     )
+
+
+class MonitoringMiddleware(BaseHTTPMiddleware):
+    """Middleware for request tracking and metrics"""
+
+    async def dispatch(self, request, call_next):
+        # Generate request ID
+        request_id = str(uuid.uuid4())
+        request.state.request_id = request_id
+
+        # Set Sentry context
+        if ENABLE_SENTRY:
+            from src.monitoring import set_request_context
+            endpoint = request.url.path
+            set_request_context(request_id, f"{request.method} {endpoint}")
+
+        # Track metrics
+        if ENABLE_PROMETHEUS:
+            from src.monitoring.prometheus_metrics import metrics
+            start_time = time.time()
+
+            try:
+                response = await call_next(request)
+
+                # Record successful request
+                duration = time.time() - start_time
+                metrics.http_requests_total.labels(
+                    method=request.method,
+                    endpoint=request.url.path,
+                    status=response.status_code
+                ).inc()
+
+                metrics.http_request_duration_seconds.labels(
+                    method=request.method,
+                    endpoint=request.url.path
+                ).observe(duration)
+
+                return response
+
+            except Exception as e:
+                # Record error
+                duration = time.time() - start_time
+                metrics.http_errors_total.labels(
+                    method=request.method,
+                    endpoint=request.url.path,
+                    error_type=type(e).__name__
+                ).inc()
+
+                metrics.http_request_duration_seconds.labels(
+                    method=request.method,
+                    endpoint=request.url.path
+                ).observe(duration)
+
+                raise
+        else:
+            response = await call_next(request)
+            return response
+
+
+def setup_monitoring(app):
+    """Configure monitoring middleware"""
+    app.add_middleware(MonitoringMiddleware)
+    logger.info("Monitoring middleware configured")

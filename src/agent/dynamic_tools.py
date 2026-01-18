@@ -8,6 +8,7 @@ import logging
 import time
 from typing import Optional, Callable, Any
 from pydantic import BaseModel
+from src.exceptions import ToolValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -16,9 +17,8 @@ logger = logging.getLogger(__name__)
 # Code Validation & Security
 # ==========================================
 
-class CodeValidationError(Exception):
-    """Raised when generated code fails validation"""
-    pass
+# Backward compatibility alias
+CodeValidationError = ToolValidationError
 
 
 ALLOWED_IMPORTS = {

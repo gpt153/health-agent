@@ -5,16 +5,28 @@ MEMORY ARCHITECTURE:
 - Markdown files: User-inspectable profile & preferences ONLY
 - Mem0: Semantic search for unstructured patterns (optional)
 - Redis: Cache layer for user preferences (1hr TTL)
+
+CACHING:
+- User profiles and preferences are cached for 5 minutes to reduce disk I/O
+- Cache is automatically invalidated on updates
 """
 import logging
 from pathlib import Path
+from typing import Dict, TypedDict
 from src.config import DATA_PATH
 from src.memory.templates import (
     PROFILE_TEMPLATE,
     PREFERENCES_TEMPLATE
 )
+from src.utils.cache import cache_with_ttl, CacheConfig, invalidate_user_cache
 
 logger = logging.getLogger(__name__)
+
+
+class UserMemory(TypedDict):
+    """Type definition for user memory data"""
+    profile: str
+    preferences: str
 
 
 class MemoryFileManager:
@@ -60,8 +72,13 @@ class MemoryFileManager:
         filepath.write_text(content)
         logger.info(f"Updated {filename} for user {telegram_id}")
 
-    async def load_user_memory(self, telegram_id: str) -> dict:
-        """Load all memory files for user
+    @cache_with_ttl(
+        ttl=CacheConfig.USER_PROFILE_TTL,
+        key_prefix="user_memory",
+        include_args=True
+    )
+    async def load_user_memory(self, telegram_id: str) -> UserMemory:
+        """Load all memory files for user (cached for 5 minutes)
 
         Only loads profile and preferences from markdown files.
         Food history comes from PostgreSQL, patterns from Mem0.
@@ -70,6 +87,9 @@ class MemoryFileManager:
         - Check cache first
         - Load from files on cache miss
         - Update cache for future requests
+
+        This method is cached to reduce disk I/O on frequent profile/preference reads.
+        Cache is automatically invalidated when profile or preferences are updated.
         """
         from src.cache.redis_client import get_cache
 
@@ -146,6 +166,9 @@ class MemoryFileManager:
         # Audit the change
         await audit_profile_update(telegram_id, field, old_value, value)
 
+        # Invalidate cache for this user
+        invalidate_user_cache(telegram_id)
+
         logger.info(f"Updated profile field {field} for user {telegram_id}")
 
     async def update_preferences(self, telegram_id: str, preference: str, value: str) -> None:
@@ -197,6 +220,9 @@ class MemoryFileManager:
 
         # Audit the change
         await audit_preference_update(telegram_id, preference, old_value, value)
+
+        # Invalidate cache for this user
+        invalidate_user_cache(telegram_id)
 
         logger.info(f"Updated preference {preference} for user {telegram_id}")
 
