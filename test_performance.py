@@ -1,12 +1,20 @@
 """
 Performance Testing Script for Telegram Bot Response Latency
 Measures actual timings at each stage of message processing
+
+Enhanced with comprehensive metrics:
+- System resource usage (CPU, memory)
+- Database connection pool statistics
+- Network I/O metrics
+- Per-handler breakdown
+- P50, P95, P99 latency percentiles
 """
 import asyncio
 import logging
 import time
 from datetime import datetime
 import sys
+from typing import Optional
 
 # Setup logging
 logging.basicConfig(
@@ -23,28 +31,27 @@ from src.memory.system_prompt import generate_system_prompt
 from src.agent import get_agent_response
 from src.db.connection import db
 
+# Import profiling utilities
+from src.utils.profiling import PerformanceTimer, SystemMetrics, PerformanceMonitor
 
-class PerformanceTimer:
-    """Context manager for timing code blocks"""
-    def __init__(self, name: str):
-        self.name = name
-        self.start_time = None
-        self.end_time = None
-        self.duration_ms = None
-
-    def __enter__(self):
-        self.start_time = time.perf_counter()
-        return self
-
-    def __exit__(self, *args):
-        self.end_time = time.perf_counter()
-        self.duration_ms = (self.end_time - self.start_time) * 1000
-        logger.info(f"⏱️  [{self.name}] took {self.duration_ms:.2f}ms ({self.duration_ms/1000:.2f}s)")
+# Try to import psutil for enhanced metrics
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    logger.warning("psutil not available - system metrics will be limited")
 
 
-async def test_message_performance(user_id: str, message: str, test_name: str):
+async def test_message_performance(user_id: str, message: str, test_name: str, monitor: Optional[PerformanceMonitor] = None):
     """
-    Test performance of a single message through the entire pipeline
+    Test performance of a single message through the entire pipeline.
+
+    Args:
+        user_id: Test user ID
+        message: Message to send
+        test_name: Descriptive name for this test
+        monitor: Optional performance monitor for tracking metrics
     """
     print(f"\n{'='*80}")
     print(f"🧪 TEST: {test_name}")
@@ -53,6 +60,12 @@ async def test_message_performance(user_id: str, message: str, test_name: str):
     print(f"{'='*80}\n")
 
     timings = {}
+
+    # Capture initial system state
+    initial_metrics = SystemMetrics.get_snapshot()
+    print(f"📊 Initial State:")
+    print(f"   ↳ Memory: {initial_metrics['memory_mb']:.2f} MB")
+    print(f"   ↳ CPU: {initial_metrics['cpu_percent']:.1f}%\n")
 
     # Stage 1: Load conversation history
     with PerformanceTimer("1. Load Conversation History") as timer:
@@ -96,6 +109,10 @@ async def test_message_performance(user_id: str, message: str, test_name: str):
     total_time = sum(timings.values())
     timings['total'] = total_time
 
+    # Capture final system state
+    final_metrics = SystemMetrics.get_snapshot()
+    memory_delta = final_metrics['memory_mb'] - initial_metrics['memory_mb']
+
     # Print summary
     print(f"\n📊 TIMING BREAKDOWN:")
     print(f"{'─'*80}")
@@ -105,7 +122,24 @@ async def test_message_performance(user_id: str, message: str, test_name: str):
             print(f"  {stage:40s}: {duration:8.2f}ms ({duration/1000:6.2f}s) [{percentage:5.1f}%]")
     print(f"{'─'*80}")
     print(f"  {'TOTAL':40s}: {total_time:8.2f}ms ({total_time/1000:6.2f}s) [100.0%]")
+    print(f"{'─'*80}")
+
+    # System resource changes
+    print(f"\n💾 RESOURCE USAGE:")
+    print(f"{'─'*80}")
+    print(f"  Memory: {initial_metrics['memory_mb']:.2f} MB → {final_metrics['memory_mb']:.2f} MB (Δ {memory_delta:+.2f} MB)")
+    print(f"  CPU: {final_metrics['cpu_percent']:.1f}%")
     print(f"{'─'*80}\n")
+
+    # Record in performance monitor if provided
+    if monitor:
+        monitor.record_sample(
+            test_name=test_name,
+            total_time_ms=total_time,
+            memory_mb=final_metrics['memory_mb'],
+            memory_delta_mb=memory_delta,
+            **timings
+        )
 
     return timings, response
 
@@ -155,20 +189,49 @@ async def profile_database_query(user_id: str):
     return timer.duration_ms
 
 
+async def check_database_pool_stats():
+    """Check database connection pool statistics"""
+    print(f"\n🔍 DATABASE CONNECTION POOL:")
+    print(f"{'─'*80}")
+
+    if hasattr(db, '_pool') and db._pool:
+        pool = db._pool
+        # Access pool stats if available
+        try:
+            # psycopg pool has these attributes
+            pool_size = getattr(pool, 'size', 'N/A')
+            pool_available = getattr(pool, 'available', 'N/A')
+
+            print(f"  Pool Size: {pool_size}")
+            print(f"  Available Connections: {pool_available}")
+            print(f"  Active Connections: {pool_size - pool_available if isinstance(pool_size, int) and isinstance(pool_available, int) else 'N/A'}")
+        except Exception as e:
+            print(f"  ⚠️  Could not retrieve pool stats: {e}")
+    else:
+        print(f"  ⚠️  No connection pool initialized")
+
+    print(f"{'─'*80}\n")
+
+
 async def run_all_tests():
     """
-    Run comprehensive performance tests
+    Run comprehensive performance tests with enhanced metrics
     """
     print("\n" + "="*80)
-    print("🚀 TELEGRAM BOT PERFORMANCE ANALYSIS")
+    print("🚀 TELEGRAM BOT PERFORMANCE ANALYSIS (ENHANCED)")
     print("="*80)
     print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"CPU Cores: {SystemMetrics.get_cpu_count()}")
+    print(f"Initial Memory: {SystemMetrics.get_memory_usage_mb():.2f} MB")
     print("="*80)
 
     # Initialize database connection pool
     print("\n🔌 Initializing database connection pool...")
     await db.init_pool()
-    print("✓ Database pool initialized\n")
+    print("✓ Database pool initialized")
+
+    # Check pool stats
+    await check_database_pool_stats()
 
     # Test user (create if doesn't exist)
     test_user = "test_user_999888777"
@@ -193,9 +256,12 @@ async def run_all_tests():
 
     all_results = []
 
+    # Create performance monitor
+    monitor = PerformanceMonitor("Baseline Tests")
+
     for test_name, message in test_cases:
         try:
-            timings, response = await test_message_performance(test_user, message, test_name)
+            timings, response = await test_message_performance(test_user, message, test_name, monitor)
             all_results.append({
                 'test': test_name,
                 'message': message,
@@ -241,6 +307,19 @@ async def run_all_tests():
                     print(f"  {stage:40s}: {avg_ms:8.2f}ms ({avg_ms/1000:6.2f}s) [{percentage:5.1f}%]")
             print("─"*80)
             print(f"  {'AVERAGE TOTAL':40s}: {total_avg:8.2f}ms ({total_avg/1000:6.2f}s)")
+            print("─"*80)
+
+            # Calculate percentiles using PerformanceMonitor
+            print("\n📊 LATENCY PERCENTILES (total response time):")
+            print("─"*80)
+            summary = monitor.get_summary()
+            if 'metrics' in summary and 'total' in summary['metrics']:
+                total_metrics = summary['metrics']['total']
+                print(f"  P50 (median): {total_metrics['p50']/1000:.2f}s")
+                print(f"  P95:          {total_metrics['p95']/1000:.2f}s")
+                print(f"  P99:          {total_metrics['p99']/1000:.2f}s")
+                print(f"  Min:          {total_metrics['min']/1000:.2f}s")
+                print(f"  Max:          {total_metrics['max']/1000:.2f}s")
             print("─"*80)
 
             # Identify bottlenecks
