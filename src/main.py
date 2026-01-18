@@ -104,6 +104,26 @@ async def main() -> None:
         logger.info("Initializing database connection pool...")
         await db.init_pool()
 
+        # Initialize resilience components
+        logger.info("Initializing resilience components...")
+
+        # Initialize local nutrition cache (SQLite)
+        from src.db.nutrition_cache import init_nutrition_cache
+        try:
+            init_nutrition_cache()
+            logger.info("✓ Nutrition cache initialized with common foods")
+        except Exception as e:
+            logger.error(f"Failed to initialize nutrition cache: {e}", exc_info=True)
+
+        # Start Prometheus metrics server
+        from prometheus_client import start_http_server
+        from src.config import METRICS_PORT
+        try:
+            start_http_server(METRICS_PORT)
+            logger.info(f"✓ Prometheus metrics exposed on :{METRICS_PORT}/metrics")
+        except Exception as e:
+            logger.warning(f"Failed to start metrics server: {e}")
+
         # Load dynamic tools from database
         logger.info("Loading dynamic tools...")
         loaded_tools = await tool_manager.load_all_tools()
