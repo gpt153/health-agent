@@ -12,9 +12,232 @@ from src.utils.datetime_helpers import now_utc
 logger = logging.getLogger(__name__)
 
 
+async def _validate_completion(query, user_id: str) -> dict:
+    """
+    Validate authorization and parse callback data
+
+    Args:
+        query: Telegram callback query
+        user_id: User's Telegram ID
+
+    Returns:
+        dict: {"reminder_id": str, "scheduled_time": str}
+
+    Raises:
+        ValueError: If validation fails or data is invalid
+    """
+    # Check authorization
+    if not await is_authorized(user_id):
+        await query.answer("Unauthorized", show_alert=True)
+        raise ValueError("Unauthorized user")
+
+    # Always answer callback query to remove loading animation
+    await query.answer("✅ Marked as done!")
+
+    # Parse callback data: reminder_done|{reminder_id}|{scheduled_time}
+    callback_data = query.data
+    parts = callback_data.split("|")
+
+    if len(parts) < 3:
+        logger.error(f"Invalid callback data format: {callback_data}")
+        await query.edit_message_text(
+            "❌ Error: Invalid reminder data",
+            parse_mode="Markdown"
+        )
+        raise ValueError(f"Invalid callback data format: {callback_data}")
+
+    return {
+        "reminder_id": parts[1],
+        "scheduled_time": parts[2]
+    }
+
+
+async def _mark_reminder_complete(
+    reminder_id: str,
+    user_id: str,
+    scheduled_time: str
+) -> datetime:
+    """
+    Save reminder completion to database
+
+    Args:
+        reminder_id: UUID of the reminder
+        user_id: User's Telegram ID
+        scheduled_time: Scheduled time (HH:MM format)
+
+    Returns:
+        datetime: Completion timestamp (UTC)
+    """
+    completed_at = now_utc()
+
+    await save_reminder_completion(
+        reminder_id=reminder_id,
+        user_id=user_id,
+        scheduled_time=scheduled_time,
+        notes=None
+    )
+
+    return completed_at
+
+
+async def _apply_completion_rewards(
+    user_id: str,
+    reminder_id: str,
+    completed_at: datetime,
+    scheduled_time: str
+) -> dict:
+    """
+    Process gamification rewards (XP, streaks, levels)
+
+    Args:
+        user_id: User's Telegram ID
+        reminder_id: UUID of the reminder
+        completed_at: Completion timestamp
+        scheduled_time: Scheduled time (HH:MM format)
+
+    Returns:
+        dict: Gamification result with XP, streaks, level info, message
+    """
+    return await handle_reminder_completion_gamification(
+        user_id=user_id,
+        reminder_id=reminder_id,
+        completed_at=completed_at,
+        scheduled_time=scheduled_time
+    )
+
+
+async def _trigger_gamification_events(
+    context: ContextTypes.DEFAULT_TYPE,
+    update: Update,
+    user_id: str,
+    reminder_id: str
+) -> None:
+    """
+    Check for and send achievement unlock notifications
+
+    Args:
+        context: Telegram context
+        update: Telegram update
+        user_id: User's Telegram ID
+        reminder_id: UUID of the reminder
+    """
+    try:
+        from src.utils.achievement_checker import check_and_unlock_achievements, format_achievement_unlock
+
+        new_achievements = await check_and_unlock_achievements(
+            user_id=user_id,
+            reminder_id=reminder_id,
+            event_type="completion"
+        )
+
+        # Send achievement notifications
+        for achievement in new_achievements:
+            achievement_message = format_achievement_unlock(achievement)
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=achievement_message,
+                parse_mode="Markdown"
+            )
+            logger.info(f"Achievement unlocked notification sent: {achievement['id']} for user {user_id}")
+
+    except Exception as e:
+        logger.error(f"Error checking achievements: {e}", exc_info=True)
+        # Don't fail the completion if achievement checking fails
+
+
+async def _notify_completion(
+    query,
+    original_text: str,
+    reminder_id: str,
+    scheduled_time: str,
+    completed_at: datetime,
+    gamification_result: dict
+) -> None:
+    """
+    Format and display completion message with gamification info
+
+    Args:
+        query: Telegram callback query
+        original_text: Original reminder message text
+        reminder_id: UUID of the reminder
+        scheduled_time: Scheduled time (HH:MM format)
+        completed_at: Completion timestamp
+        gamification_result: Result from gamification processing
+    """
+    # Format completion message with time difference
+    try:
+        # Parse scheduled time
+        hour, minute = map(int, scheduled_time.split(":"))
+        scheduled_hour = f"{hour:02d}:{minute:02d}"
+        actual_time = completed_at.strftime("%H:%M")
+
+        # Calculate time difference
+        scheduled_minutes = hour * 60 + minute
+        actual_minutes = completed_at.hour * 60 + completed_at.minute
+        diff_minutes = actual_minutes - scheduled_minutes
+
+        # Create time difference string
+        if diff_minutes == 0:
+            time_note = "✅ Completed on time!"
+        elif diff_minutes > 0:
+            hours = diff_minutes // 60
+            mins = diff_minutes % 60
+            if hours > 0:
+                time_note = f"✅ Completed {hours}h {mins}m after scheduled time"
+            else:
+                time_note = f"✅ Completed {mins}m after scheduled time"
+        else:
+            time_note = "✅ Completed early!"
+
+        # Build completion message
+        completion_message = (
+            f"{original_text}\n\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"{time_note}\n"
+            f"⏰ Scheduled: {scheduled_hour}\n"
+            f"✅ Completed: {actual_time}"
+        )
+
+        # Add gamification section if available
+        gamification_msg = gamification_result.get('message', '')
+        if gamification_msg:
+            completion_message += f"\n\n🎯 **PROGRESS**\n{gamification_msg}"
+
+    except Exception as e:
+        logger.error(f"Error formatting completion message: {e}", exc_info=True)
+        completion_message = f"{original_text}\n\n✅ Marked as completed at {completed_at.strftime('%H:%M')}"
+
+        # Add gamification even on error
+        gamification_msg = gamification_result.get('message', '')
+        if gamification_msg:
+            completion_message += f"\n\n🎯 **PROGRESS**\n{gamification_msg}"
+
+    # Add "Add Note" and "Stats" buttons
+    keyboard = [
+        [
+            InlineKeyboardButton("📝 Add Note", callback_data=f"add_note|{reminder_id}|{scheduled_time}"),
+            InlineKeyboardButton("📊 Stats", callback_data=f"view_stats|{reminder_id}")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.edit_message_text(
+        completion_message,
+        parse_mode="Markdown",
+        reply_markup=reply_markup
+    )
+
+
 async def handle_reminder_completion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handle when user clicks 'Done' on a reminder
+
+    This is the main orchestrator that coordinates the completion flow:
+    1. Validate authorization and parse callback data
+    2. Save completion to database
+    3. Apply gamification rewards (XP, streaks, levels)
+    4. Check and notify achievements
+    5. Update UI with completion message
 
     Callback data format: reminder_done|{reminder_id}|{scheduled_time}
     Example: reminder_done|550e8400-e29b-41d4-a716-446655440000|08:00
@@ -22,152 +245,61 @@ async def handle_reminder_completion(update: Update, context: ContextTypes.DEFAU
     query = update.callback_query
     user_id = str(update.effective_user.id)
 
-    # Check authorization
-    if not await is_authorized(user_id):
-        await query.answer("Unauthorized", show_alert=True)
-        return
-
     try:
-        # Always answer callback query to remove loading animation
-        await query.answer("✅ Marked as done!")
+        # 1. Validate and extract data
+        completion_data = await _validate_completion(query, user_id)
 
-        # Parse callback data
-        # Format: reminder_done|{reminder_id}|{scheduled_time}
-        callback_data = query.data
-        parts = callback_data.split("|")
-
-        if len(parts) < 3:
-            logger.error(f"Invalid callback data format: {callback_data}")
-            await query.edit_message_text(
-                "❌ Error: Invalid reminder data",
-                parse_mode="Markdown"
-            )
-            return
-
-        reminder_id = parts[1]
-        scheduled_time = parts[2]
-
-        # Get actual completion time (now in UTC for DB storage)
-        completed_at = now_utc()
-
-        # Save completion to database
-        await save_reminder_completion(
-            reminder_id=reminder_id,
-            user_id=user_id,
-            scheduled_time=scheduled_time,
-            notes=None
+        # 2. Save to database
+        completed_at = await _mark_reminder_complete(
+            completion_data["reminder_id"],
+            user_id,
+            completion_data["scheduled_time"]
         )
 
-        # Process gamification (XP, streaks, achievements)
-        gamification_result = await handle_reminder_completion_gamification(
-            user_id=user_id,
-            reminder_id=reminder_id,
-            completed_at=completed_at,
-            scheduled_time=scheduled_time
+        # 3. Apply gamification rewards
+        gamification_result = await _apply_completion_rewards(
+            user_id,
+            completion_data["reminder_id"],
+            completed_at,
+            completion_data["scheduled_time"]
         )
 
-        # Update message to show completion
-        original_text = query.message.text
+        # 4. Check and notify achievements
+        await _trigger_gamification_events(
+            context,
+            update,
+            user_id,
+            completion_data["reminder_id"]
+        )
 
-        # Format completion message with time difference
-        try:
-            # Parse scheduled time
-            hour, minute = map(int, scheduled_time.split(":"))
-            scheduled_hour = f"{hour:02d}:{minute:02d}"
-            actual_time = completed_at.strftime("%H:%M")
-
-            # Calculate time difference
-            scheduled_minutes = hour * 60 + minute
-            actual_minutes = completed_at.hour * 60 + completed_at.minute
-            diff_minutes = actual_minutes - scheduled_minutes
-
-            # Create time difference string
-            if diff_minutes == 0:
-                time_note = "✅ Completed on time!"
-            elif diff_minutes > 0:
-                hours = diff_minutes // 60
-                mins = diff_minutes % 60
-                if hours > 0:
-                    time_note = f"✅ Completed {hours}h {mins}m after scheduled time"
-                else:
-                    time_note = f"✅ Completed {mins}m after scheduled time"
-            else:
-                time_note = "✅ Completed early!"
-
-            # Update message with gamification info
-            gamification_msg = gamification_result.get('message', '')
-
-            completion_message = (
-                f"{original_text}\n\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"{time_note}\n"
-                f"⏰ Scheduled: {scheduled_hour}\n"
-                f"✅ Completed: {actual_time}"
-            )
-
-            # Add gamification section if available
-            if gamification_msg:
-                completion_message += f"\n\n🎯 **PROGRESS**\n{gamification_msg}"
-
-        except Exception as e:
-            logger.error(f"Error formatting completion message: {e}", exc_info=True)
-            completion_message = f"{original_text}\n\n✅ Marked as completed at {completed_at.strftime('%H:%M')}"
-
-            # Add gamification even on error
-            gamification_msg = gamification_result.get('message', '')
-            if gamification_msg:
-                completion_message += f"\n\n🎯 **PROGRESS**\n{gamification_msg}"
-
-        # Add "Add Note" button
-        keyboard = [
-            [
-                InlineKeyboardButton("📝 Add Note", callback_data=f"add_note|{reminder_id}|{scheduled_time}"),
-                InlineKeyboardButton("📊 Stats", callback_data=f"view_stats|{reminder_id}")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await query.edit_message_text(
-            completion_message,
-            parse_mode="Markdown",
-            reply_markup=reply_markup
+        # 5. Update UI with completion info
+        await _notify_completion(
+            query,
+            query.message.text,
+            completion_data["reminder_id"],
+            completion_data["scheduled_time"],
+            completed_at,
+            gamification_result
         )
 
         logger.info(
-            f"Reminder completed: user={user_id}, reminder={reminder_id}, "
-            f"scheduled={scheduled_time}, completed={completed_at.strftime('%H:%M')}"
+            f"Reminder completed: user={user_id}, reminder={completion_data['reminder_id']}, "
+            f"scheduled={completion_data['scheduled_time']}, completed={completed_at.strftime('%H:%M')}"
         )
 
-        # Check for newly unlocked achievements
-        try:
-            from src.utils.achievement_checker import check_and_unlock_achievements, format_achievement_unlock
-
-            new_achievements = await check_and_unlock_achievements(
-                user_id=user_id,
-                reminder_id=reminder_id,
-                event_type="completion"
-            )
-
-            # Send achievement notifications
-            for achievement in new_achievements:
-                achievement_message = format_achievement_unlock(achievement)
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=achievement_message,
-                    parse_mode="Markdown"
-                )
-                logger.info(f"Achievement unlocked notification sent: {achievement['id']} for user {user_id}")
-
-        except Exception as e:
-            logger.error(f"Error checking achievements: {e}", exc_info=True)
-            # Don't fail the completion if achievement checking fails
-
+    except ValueError as e:
+        # Validation error - already handled in validate_completion
+        logger.error(f"Validation error: {e}")
     except Exception as e:
         logger.error(f"Error handling reminder completion: {e}", exc_info=True)
-        await query.edit_message_text(
-            f"{query.message.text}\n\n❌ Error saving completion. Please try again.",
-            parse_mode="Markdown"
-        )
+        try:
+            await query.edit_message_text(
+                f"{query.message.text}\n\n❌ Error saving completion. Please try again.",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            # If we can't edit the message, log and continue
+            logger.error("Failed to send error message to user")
 
 
 async def handle_reminder_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

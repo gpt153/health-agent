@@ -251,12 +251,12 @@ def format_comparison_report(comparison: Dict) -> str:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
 
-    print("=" * 60)
-    print("ESTIMATE COMPARISON TESTS")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("ESTIMATE COMPARISON TESTS")
+    logger.info("=" * 60)
 
     # Test 1: Low variance (all estimates close)
-    print("\n1. Low variance - all estimates agree:")
+    logger.info("\n1. Low variance - all estimates agree:")
     estimates1 = [
         {"source": "vision_ai", "calories": 280, "macros": {"protein": 53, "carbs": 0, "fat": 6}},
         {"source": "usda", "calories": 275, "macros": {"protein": 52, "carbs": 0, "fat": 6}},
@@ -264,11 +264,11 @@ if __name__ == "__main__":
     ]
 
     result1 = compare_estimates(estimates1)
-    print(format_comparison_report(result1))
-    print(f"   Requires debate: {result1['requires_debate']}")
+    logger.info(format_comparison_report(result1))
+    logger.info(f"   Requires debate: {result1['requires_debate']}")
 
     # Test 2: High variance (user's reported issue)
-    print("\n2. High variance - disagreement (small salad case):")
+    logger.info("\n2. High variance - disagreement (small salad case):")
     estimates2 = [
         {"source": "vision_ai", "calories": 450, "macros": {"protein": 5, "carbs": 10, "fat": 35}},
         {"source": "usda", "calories": 120, "macros": {"protein": 2, "carbs": 8, "fat": 6}},
@@ -276,12 +276,12 @@ if __name__ == "__main__":
     ]
 
     result2 = compare_estimates(estimates2)
-    print(format_comparison_report(result2))
-    print(f"   Requires debate: {result2['requires_debate']}")
-    print(f"   Weighted consensus: {result2['consensus']} kcal")
+    logger.info(format_comparison_report(result2))
+    logger.info(f"   Requires debate: {result2['requires_debate']}")
+    logger.info(f"   Weighted consensus: {result2['consensus']} kcal")
 
     # Test 3: Medium variance (borderline case)
-    print("\n3. Medium variance - borderline:")
+    logger.info("\n3. Medium variance - borderline:")
     estimates3 = [
         {"source": "vision_ai", "calories": 300},
         {"source": "usda", "calories": 220},
@@ -289,9 +289,9 @@ if __name__ == "__main__":
     ]
 
     result3 = compare_estimates(estimates3, variance_threshold=0.30)
-    print(format_comparison_report(result3))
-    print(f"   Requires debate: {result3['requires_debate']}")
+    logger.info(format_comparison_report(result3))
+    logger.info(f"   Requires debate: {result3['requires_debate']}")
 
-    print("\n" + "=" * 60)
-    print("TESTS COMPLETE")
-    print("=" * 60)
+    logger.info("\n" + "=" * 60)
+    logger.info("TESTS COMPLETE")
+    logger.info("=" * 60)

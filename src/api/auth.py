@@ -4,6 +4,7 @@ import logging
 from typing import Optional
 from fastapi import HTTPException, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from src.exceptions import AuthenticationError, ConfigurationError
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +33,14 @@ async def verify_api_key(
         The verified API key
 
     Raises:
-        HTTPException: If API key is invalid
+        HTTPException: If API key is invalid (for FastAPI compatibility)
     """
     api_key = credentials.credentials
     valid_keys = get_api_keys()
 
     if not valid_keys:
         logger.error("No API keys configured - rejecting all requests")
+        # Raise HTTPException for FastAPI to handle
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="API authentication not configured"
@@ -46,6 +48,7 @@ async def verify_api_key(
 
     if api_key not in valid_keys:
         logger.warning(f"Invalid API key attempt: {api_key[:10]}...")
+        # Raise HTTPException for FastAPI to handle
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key"

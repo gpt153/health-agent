@@ -143,3 +143,87 @@ class ErrorResponse(BaseModel):
     error: str = Field(..., description="Error message")
     detail: Optional[str] = Field(None, description="Detailed error information")
     timestamp: datetime = Field(default_factory=datetime.now)
+
+
+# ============================================================================
+# Formula API Models (Epic 009 - Phase 3)
+# ============================================================================
+
+class FormulaCreateRequest(BaseModel):
+    """Request to create a new formula"""
+    name: str = Field(..., description="Formula name", min_length=1, max_length=200)
+    keywords: List[str] = Field(default_factory=list, description="Search keywords")
+    description: Optional[str] = Field(None, description="Formula description")
+    foods: List[Dict[str, Any]] = Field(..., description="Food items in formula")
+    total_calories: int = Field(..., description="Total calories", ge=0)
+    total_macros: Dict[str, float] = Field(..., description="Macros: protein, carbs, fat")
+    reference_photo_path: Optional[str] = Field(None, description="Reference photo path")
+    created_from_entry_id: Optional[str] = Field(None, description="Original food entry UUID")
+
+
+class FormulaUpdateRequest(BaseModel):
+    """Request to update a formula"""
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    keywords: Optional[List[str]] = None
+    description: Optional[str] = None
+    foods: Optional[List[Dict[str, Any]]] = None
+    total_calories: Optional[int] = Field(None, ge=0)
+    total_macros: Optional[Dict[str, float]] = None
+
+
+class FormulaResponse(BaseModel):
+    """Formula response model"""
+    id: str
+    name: str
+    keywords: List[str]
+    description: Optional[str]
+    foods: List[Dict[str, Any]]
+    total_calories: int
+    total_macros: Dict[str, float]
+    reference_photo_path: Optional[str]
+    is_auto_detected: bool
+    confidence_score: Optional[float]
+    times_used: int
+    last_used_at: datetime
+    created_at: datetime
+
+
+class FormulaListResponse(BaseModel):
+    """List of formulas response"""
+    formulas: List[FormulaResponse]
+    total_count: int
+
+
+class FormulaSearchRequest(BaseModel):
+    """Formula search request"""
+    keyword: str = Field(..., description="Search keyword", min_length=1)
+    limit: int = Field(5, description="Max results", ge=1, le=20)
+
+
+class FormulaSearchResponse(BaseModel):
+    """Formula search results"""
+    formulas: List[Dict[str, Any]]
+    query: str
+    match_count: int
+
+
+class FormulaUseRequest(BaseModel):
+    """Request to log formula usage"""
+    food_entry_id: str = Field(..., description="Food entry UUID where formula was used")
+    match_method: str = Field(..., description="How matched: keyword, visual, combined, manual")
+    match_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+    is_exact_match: bool = Field(True, description="Whether it was an exact match")
+    variations: Optional[Dict[str, Any]] = Field(None, description="Any deviations from formula")
+
+
+class FormulaSuggestionRequest(BaseModel):
+    """Request for formula suggestions"""
+    text: Optional[str] = Field(None, description="Text input from user")
+    image_path: Optional[str] = Field(None, description="Image path if available")
+    max_suggestions: int = Field(3, ge=1, le=10)
+
+
+class FormulaSuggestionResponse(BaseModel):
+    """Formula suggestion response"""
+    suggestions: List[Dict[str, Any]]
+    suggestion_count: int

@@ -2,7 +2,7 @@
 import logging
 import asyncio
 import os
-from src.config import validate_config, LOG_LEVEL
+from src.config import validate_config, LOG_LEVEL, ENABLE_SENTRY
 from src.db.connection import db
 from src.bot import create_bot_application
 from src.agent.dynamic_tools import tool_manager
@@ -14,6 +14,12 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+# Initialize Sentry monitoring early (for startup errors)
+if ENABLE_SENTRY:
+    from src.monitoring import init_sentry
+    init_sentry()
+    logger.info("Sentry monitoring initialized (early)")
 
 
 async def run_telegram_bot() -> None:
@@ -37,6 +43,12 @@ async def run_telegram_bot() -> None:
             # Load sleep quiz schedules
             logger.info("Loading sleep quiz schedules...")
             await reminder_manager.load_sleep_quiz_schedules()
+
+        # Schedule pattern mining jobs (Epic 009 - Phase 6)
+        logger.info("Scheduling pattern mining jobs...")
+        from src.scheduler.pattern_mining import PatternMiningScheduler
+        pattern_scheduler = PatternMiningScheduler(app)
+        await pattern_scheduler.schedule_pattern_mining()
 
         await app.updater.start_polling()
 

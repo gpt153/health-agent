@@ -279,9 +279,9 @@ if __name__ == "__main__":
     async def test_debate():
         """Test debate mechanism"""
 
-        print("\n" + "="*60)
-        print("DEBATE MECHANISM TEST")
-        print("="*60)
+        logger.info("\n" + "="*60)
+        logger.info("DEBATE MECHANISM TEST")
+        logger.info("="*60)
 
         # Simulate the small salad case with high variance
         agents = [
@@ -324,17 +324,17 @@ if __name__ == "__main__":
             max_rounds=2
         )
 
-        print("\nDebate Log:")
+        logger.info("\nDebate Log:")
         for entry in result["debate_log"]:
-            print(f"\nRound {entry['round']} - {entry['agent']}:")
-            print(f"  Estimate: {entry['calories']} kcal")
-            print(f"  {entry['summary']}")
+            logger.info(f"\nRound {entry['round']} - {entry['agent']}:")
+            logger.info(f"  Estimate: {entry['calories']} kcal")
+            logger.info(f"  {entry['summary']}")
 
-        print(f"\n\nFinal Estimate: {result['final_estimate']['calories']} kcal")
-        print(f"Confidence: {result['final_estimate']['confidence']:.1%}")
+        logger.info(f"\n\nFinal Estimate: {result['final_estimate']['calories']} kcal")
+        logger.info(f"Confidence: {result['final_estimate']['confidence']:.1%}")
 
-        print("\n" + "="*60)
-        print("TEST COMPLETE")
-        print("="*60)
+        logger.info("\n" + "="*60)
+        logger.info("TEST COMPLETE")
+        logger.info("="*60)
 
     asyncio.run(test_debate())
