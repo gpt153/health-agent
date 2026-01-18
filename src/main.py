@@ -6,6 +6,8 @@ from src.config import validate_config, LOG_LEVEL, ENABLE_SENTRY
 from src.db.connection import db
 from src.bot import create_bot_application
 from src.agent.dynamic_tools import tool_manager
+from src.memory.db_manager import db_memory_manager as memory_manager
+from src.services.container import init_container, set_reminder_manager
 from src.observability.sentry_config import init_sentry, shutdown_sentry
 
 # Configure logging
@@ -44,6 +46,10 @@ async def run_telegram_bot() -> None:
             # Load sleep quiz schedules
             logger.info("Loading sleep quiz schedules...")
             await reminder_manager.load_sleep_quiz_schedules()
+
+            # Set reminder_manager on service container
+            set_reminder_manager(reminder_manager)
+            logger.info("ReminderManager set on service container")
 
         # Schedule pattern mining jobs (Epic 009 - Phase 6)
         logger.info("Scheduling pattern mining jobs...")
@@ -112,6 +118,15 @@ async def main() -> None:
         # Initialize database
         logger.info("Initializing database connection pool...")
         await db.init_pool()
+
+        # Initialize service container
+        logger.info("Initializing service container...")
+        container = init_container(
+            db=db,
+            memory_manager=memory_manager,
+            reminder_manager=None  # Will be set after bot creation
+        )
+        logger.info("Service container initialized successfully")
 
         # Initialize Redis cache
         logger.info("Initializing Redis cache...")

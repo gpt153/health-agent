@@ -52,10 +52,13 @@ async def extract_message_context(
     Returns:
         MessageContext with all relevant user state
     """
-    from src.db.queries import get_user_subscription_status, get_onboarding_state
+    from src.services.container import get_container
 
-    subscription = await get_user_subscription_status(user_id)
-    onboarding = await get_onboarding_state(user_id)
+    container = get_container()
+    user_service = container.user_service
+
+    subscription = await user_service.get_subscription_status(user_id)
+    onboarding = await user_service.get_onboarding_state(user_id)
 
     return MessageContext(
         user_id=user_id,
