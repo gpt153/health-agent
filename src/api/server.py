@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from src.api.routes import router
-from src.api.middleware import setup_cors, setup_rate_limiting
+from src.api.middleware import setup_cors, setup_rate_limiting, setup_performance_monitoring
 from src.db.connection import db
 from src.config import LOG_LEVEL
 
@@ -51,6 +51,7 @@ def create_api_application() -> FastAPI:
     # Setup middleware
     setup_cors(app)
     setup_rate_limiting(app)
+    setup_performance_monitoring(app)
 
     # Include routes
     app.include_router(router)

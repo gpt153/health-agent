@@ -755,3 +755,91 @@ async def health_check():
         database=db_status,
         timestamp=datetime.now()
     )
+
+
+@router.get("/api/v1/metrics")
+async def get_metrics():
+    """
+    Performance metrics endpoint
+
+    Returns system metrics, database pool statistics, and cache performance.
+    Used by monitoring tools and load testing infrastructure.
+    """
+    try:
+        import psutil
+        from src.cache.redis_client import get_cache
+
+        # System metrics
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        memory = psutil.virtual_memory()
+        disk_io = psutil.disk_io_counters()
+
+        system_metrics = {
+            "cpu_percent": cpu_percent,
+            "memory_mb": memory.used / 1024 / 1024,
+            "memory_percent": memory.percent,
+            "memory_available_mb": memory.available / 1024 / 1024,
+            "disk_read_mb": disk_io.read_bytes / 1024 / 1024 if disk_io else 0,
+            "disk_write_mb": disk_io.write_bytes / 1024 / 1024 if disk_io else 0,
+        }
+
+        # Database pool statistics
+        pool_stats = db.get_pool_stats()
+        database_metrics = {
+            "pool_size": pool_stats.get("size", 0),
+            "pool_available": pool_stats.get("available", 0),
+            "pool_active": pool_stats.get("active", 0),
+            "pool_min_size": pool_stats.get("min_size", 0),
+            "pool_max_size": pool_stats.get("max_size", 0),
+            "pool_utilization_percent": (
+                (pool_stats.get("active", 0) / pool_stats.get("size", 1)) * 100
+                if pool_stats.get("size", 0) > 0 else 0
+            ),
+        }
+
+        # Redis cache statistics
+        cache = get_cache()
+        cache_stats = {}
+        if cache:
+            stats = cache.get_stats()
+            total_reads = stats.get("hits", 0) + stats.get("misses", 0)
+            hit_rate = (
+                (stats.get("hits", 0) / total_reads * 100)
+                if total_reads > 0 else 0
+            )
+
+            cache_stats = {
+                "enabled": cache.enabled,
+                "hits": stats.get("hits", 0),
+                "misses": stats.get("misses", 0),
+                "sets": stats.get("sets", 0),
+                "deletes": stats.get("deletes", 0),
+                "errors": stats.get("errors", 0),
+                "total_reads": total_reads,
+                "hit_rate_percent": hit_rate,
+            }
+        else:
+            cache_stats = {
+                "enabled": False,
+                "hits": 0,
+                "misses": 0,
+                "sets": 0,
+                "deletes": 0,
+                "errors": 0,
+                "total_reads": 0,
+                "hit_rate_percent": 0,
+            }
+
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "system": system_metrics,
+            "database": database_metrics,
+            "cache": cache_stats,
+        }
+
+    except Exception as e:
+        logger.error(f"Error collecting metrics: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to collect metrics: {str(e)}"
+        )
