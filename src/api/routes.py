@@ -18,7 +18,7 @@ from src.api.models import (
 from src.api.auth import verify_api_key
 from src.api.middleware import limiter
 from src.agent import get_agent_response
-from src.memory.file_manager import memory_manager
+from src.memory.db_manager import db_memory_manager as memory_manager
 from src.db.queries import (
     user_exists, create_user,
     get_conversation_history, clear_conversation_history,

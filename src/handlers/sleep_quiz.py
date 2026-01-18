@@ -32,9 +32,9 @@ async def start_sleep_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     # Ensure user exists in database (required for foreign key constraints)
     if not await user_exists(user_id):
-        from src.memory.file_manager import memory_manager
+        from src.memory.db_manager import db_memory_manager
         await create_user(user_id)
-        await memory_manager.create_user_files(user_id)
+        await db_memory_manager.create_user_profile(user_id)
         logger.info(f"Auto-created user {user_id} for sleep quiz")
 
     # Detect user's language
