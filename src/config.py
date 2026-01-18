@@ -1,47 +1,366 @@
-"""Configuration management"""
-import os
+"""Configuration management with Pydantic Settings validation"""
+import sys
 from pathlib import Path
-from dotenv import load_dotenv
+from typing import Literal
 
-load_dotenv()
+from pydantic import Field, field_validator, model_validator, ValidationError as PydanticValidationError
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Telegram
-TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
-ALLOWED_TELEGRAM_IDS: list[str] = os.getenv("ALLOWED_TELEGRAM_IDS", "").split(",")
+from src.exceptions import ConfigurationError
 
-# Topic filtering for shared groups with multiple bots
-# - 'all' (default): Respond to all topics and DMs
-# - 'none': Only respond to DMs, ignore all topics
-# - '123,456,789': Whitelist - only respond to listed topics (and DMs)
-# - '!123,456': Blacklist - respond to all topics EXCEPT these (and DMs)
-TELEGRAM_TOPIC_FILTER: str = os.getenv("TELEGRAM_TOPIC_FILTER", "all")
 
-# Database
-DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/health_agent")
+class Settings(BaseSettings):
+    """Application configuration with comprehensive validation"""
 
-# AI Models
-OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
-VISION_MODEL: str = os.getenv("VISION_MODEL", "openai:gpt-4o-mini")
-AGENT_MODEL: str = os.getenv("AGENT_MODEL", "anthropic:claude-3-5-sonnet-latest")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",  # Ignore unknown env vars
+        # Parse comma-separated strings as JSON arrays
+        env_parse_enums=True,
+    )
 
-# Storage
-DATA_PATH: Path = Path(os.getenv("DATA_PATH", "./data"))
+    # Telegram Settings
+    telegram_bot_token: str = Field(
+        ...,  # Required
+        description="Telegram bot token from @BotFather",
+        pattern=r"^\d+:[A-Za-z0-9_-]+$",
+    )
 
-# Logging
-LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    allowed_telegram_ids_raw: str = Field(
+        ...,  # Required
+        alias="allowed_telegram_ids",
+        description="Comma-separated list of allowed Telegram user IDs",
+    )
 
-# USDA Nutrition Database
-USDA_API_KEY: str = os.getenv("USDA_API_KEY", "DEMO_KEY")
-ENABLE_NUTRITION_VERIFICATION: bool = os.getenv("ENABLE_NUTRITION_VERIFICATION", "true").lower() == "true"
+    @property
+    def allowed_telegram_ids(self) -> list[str]:
+        """Parse allowed Telegram IDs from comma-separated string"""
+        return [id.strip() for id in self.allowed_telegram_ids_raw.split(",") if id.strip()]
 
-# Validation
+    telegram_topic_filter: str = Field(
+        default="all",
+        description="Topic filter: 'all', 'none', whitelist (123,456), or blacklist (!123,456)",
+    )
+
+    # Database
+    database_url: str = Field(
+        ...,  # Required
+        description="PostgreSQL connection URL",
+    )
+
+    # AI Models
+    openai_api_key: str = Field(
+        default="",
+        description="OpenAI API key (required if using OpenAI models)",
+    )
+
+    anthropic_api_key: str = Field(
+        default="",
+        description="Anthropic API key (required if using Anthropic models)",
+    )
+
+    vision_model: str = Field(
+        default="openai:gpt-4o-mini",
+        description="Vision model: 'openai:gpt-4o-mini' or 'anthropic:claude-3-5-sonnet-latest'",
+    )
+
+    agent_model: str = Field(
+        default="anthropic:claude-3-5-sonnet-latest",
+        description="Agent model: 'openai:gpt-4o' or 'anthropic:claude-3-5-sonnet-latest'",
+    )
+
+    # Storage
+    data_path: Path = Field(
+        default=Path("./data"),
+        description="Path to data storage directory",
+    )
+
+    # Logging
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
+        default="INFO",
+        description="Logging level",
+    )
+
+    # USDA Nutrition
+    usda_api_key: str = Field(
+        default="DEMO_KEY",
+        description="USDA FoodData Central API key",
+    )
+
+    enable_nutrition_verification: bool = Field(
+        default=True,
+        description="Enable nutrition verification with USDA API",
+    )
+
+    # API Settings
+    run_mode: Literal["bot", "api", "both"] = Field(
+        default="bot",
+        description="Run mode: 'bot' (Telegram only), 'api' (REST API only), or 'both'",
+    )
+
+    api_host: str = Field(
+        default="0.0.0.0",
+        description="API server host",
+    )
+
+    api_port: int = Field(
+        default=8080,
+        ge=1,
+        le=65535,
+        description="API server port (1-65535)",
+    )
+
+    api_keys: list[str] = Field(
+        default_factory=list,
+        description="Comma-separated list of valid API keys",
+    )
+
+    cors_origins: list[str] = Field(
+        default_factory=list,
+        description="Comma-separated list of allowed CORS origins",
+    )
+
+    # Rate Limiting
+    rate_limit_storage_url: str = Field(
+        default="memory://",
+        description="Rate limit storage URL: 'memory://' for development, 'redis://localhost:6379' for production",
+    )
+
+    # Monitoring
+    enable_sentry: bool = Field(
+        default=False,
+        description="Enable Sentry error tracking (opt-in)",
+    )
+
+    sentry_dsn: str = Field(
+        default="",
+        description="Sentry DSN for error tracking",
+    )
+
+    sentry_environment: str = Field(
+        default="development",
+        description="Sentry environment name",
+    )
+
+    sentry_traces_sample_rate: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Sentry traces sample rate (0.0-1.0)",
+    )
+
+    enable_prometheus: bool = Field(
+        default=True,
+        description="Enable Prometheus metrics collection (opt-out)",
+    )
+
+    prometheus_port: int = Field(
+        default=9090,
+        ge=1,
+        le=65535,
+        description="Prometheus metrics port (1-65535)",
+    )
+
+    # OpenTelemetry Tracing
+    enable_tracing: bool = Field(
+        default=True,
+        description="Enable OpenTelemetry distributed tracing (opt-out)",
+    )
+
+    otel_service_name: str = Field(
+        default="health-agent",
+        description="OpenTelemetry service name",
+    )
+
+    otel_exporter_otlp_endpoint: str = Field(
+        default="http://localhost:4318",
+        description="OTLP exporter endpoint (HTTP)",
+    )
+
+    # Model Validators (run before field validation)
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_list_fields(cls, data: dict) -> dict:
+        """Parse comma-separated strings into lists before validation"""
+        # Handle api_keys
+        if "api_keys" in data and isinstance(data["api_keys"], str):
+            if data["api_keys"]:
+                data["api_keys"] = [
+                    key.strip() for key in data["api_keys"].split(",") if key.strip()
+                ]
+            else:
+                data["api_keys"] = []
+
+        # Handle cors_origins
+        if "cors_origins" in data and isinstance(data["cors_origins"], str):
+            if data["cors_origins"]:
+                data["cors_origins"] = [
+                    origin.strip() for origin in data["cors_origins"].split(",") if origin.strip()
+                ]
+            else:
+                data["cors_origins"] = []
+
+        return data
+
+    # Field Validators
+
+    @field_validator("database_url")
+    @classmethod
+    def validate_database_url(cls, v: str) -> str:
+        """Validate PostgreSQL URL format"""
+        if not v.startswith(("postgresql://", "postgres://")):
+            raise ValueError(
+                f"DATABASE_URL must start with 'postgresql://' or 'postgres://'. "
+                f"Got: {v[:20] if len(v) > 20 else v}...\n"
+                f"Example: postgresql://user:password@localhost:5432/database"
+            )
+
+        # Basic structure check
+        if "@" not in v or "/" not in v.split("@")[-1]:
+            raise ValueError(
+                "DATABASE_URL format invalid. "
+                "Expected: postgresql://user:password@host:port/database"
+            )
+
+        return v
+
+    @field_validator("allowed_telegram_ids_raw")
+    @classmethod
+    def validate_telegram_ids(cls, v: str) -> str:
+        """Validate Telegram IDs are non-empty and numeric"""
+        if not v or not v.strip():
+            raise ValueError(
+                "ALLOWED_TELEGRAM_IDS cannot be empty. "
+                "Get your Telegram ID from @userinfobot on Telegram."
+            )
+
+        # Validate each ID is numeric
+        ids = [id.strip() for id in v.split(",") if id.strip()]
+        for tid in ids:
+            if not tid.isdigit():
+                raise ValueError(
+                    f"Invalid Telegram ID '{tid}'. "
+                    "Telegram IDs must be numeric (e.g., 123456789). "
+                    "Get your ID from @userinfobot on Telegram."
+                )
+
+        return v
+
+    @field_validator("data_path", mode="before")
+    @classmethod
+    def validate_data_path(cls, v: Path | str) -> Path:
+        """Ensure data path is a Path object"""
+        if isinstance(v, str):
+            return Path(v)
+        return v
+
+    @model_validator(mode="after")
+    def validate_api_keys_for_models(self) -> "Settings":
+        """Validate that required API keys are present for selected models"""
+        errors = []
+
+        # Check vision model
+        if self.vision_model.startswith("openai:") and not self.openai_api_key:
+            errors.append(
+                f"❌ VISION_MODEL is set to '{self.vision_model}' but OPENAI_API_KEY is not set.\n"
+                "   Get your API key at: https://platform.openai.com/api-keys"
+            )
+
+        if self.vision_model.startswith("anthropic:") and not self.anthropic_api_key:
+            errors.append(
+                f"❌ VISION_MODEL is set to '{self.vision_model}' but ANTHROPIC_API_KEY is not set.\n"
+                "   Get your API key at: https://console.anthropic.com/"
+            )
+
+        # Check agent model
+        if self.agent_model.startswith("openai:") and not self.openai_api_key:
+            errors.append(
+                f"❌ AGENT_MODEL is set to '{self.agent_model}' but OPENAI_API_KEY is not set.\n"
+                "   Get your API key at: https://platform.openai.com/api-keys"
+            )
+
+        if self.agent_model.startswith("anthropic:") and not self.anthropic_api_key:
+            errors.append(
+                f"❌ AGENT_MODEL is set to '{self.agent_model}' but ANTHROPIC_API_KEY is not set.\n"
+                "   Get your API key at: https://console.anthropic.com/"
+            )
+
+        if errors:
+            raise ValueError("\n\n".join(errors))
+
+        return self
+
+
+# Global settings instance
+# This will validate configuration on import and fail fast if invalid
+try:
+    settings = Settings()
+except PydanticValidationError as e:
+    # Wrap Pydantic validation errors in our ConfigurationError for consistency
+    error_details = str(e)
+    print(f"\n{'=' * 80}", file=sys.stderr)
+    print("❌ CONFIGURATION ERROR", file=sys.stderr)
+    print(f"{'=' * 80}\n", file=sys.stderr)
+    print(error_details, file=sys.stderr)
+    print(f"\n{'=' * 80}", file=sys.stderr)
+    print("💡 Check your .env file and ensure all required fields are set.", file=sys.stderr)
+    print("   See .env.example for reference.", file=sys.stderr)
+    print(f"{'=' * 80}\n", file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    # Handle other unexpected errors
+    print(f"\n{'=' * 80}", file=sys.stderr)
+    print("❌ UNEXPECTED ERROR LOADING CONFIGURATION", file=sys.stderr)
+    print(f"{'=' * 80}\n", file=sys.stderr)
+    print(str(e), file=sys.stderr)
+    print(f"{'=' * 80}\n", file=sys.stderr)
+    sys.exit(1)
+
+
+# Backward compatibility: Export old variable names
+# This allows existing code to work without changes
+TELEGRAM_BOT_TOKEN = settings.telegram_bot_token
+ALLOWED_TELEGRAM_IDS = settings.allowed_telegram_ids
+TELEGRAM_TOPIC_FILTER = settings.telegram_topic_filter
+DATABASE_URL = settings.database_url
+OPENAI_API_KEY = settings.openai_api_key
+ANTHROPIC_API_KEY = settings.anthropic_api_key
+VISION_MODEL = settings.vision_model
+AGENT_MODEL = settings.agent_model
+DATA_PATH = settings.data_path
+LOG_LEVEL = settings.log_level
+USDA_API_KEY = settings.usda_api_key
+ENABLE_NUTRITION_VERIFICATION = settings.enable_nutrition_verification
+RATE_LIMIT_STORAGE_URL = settings.rate_limit_storage_url
+
+# Monitoring
+ENABLE_SENTRY = settings.enable_sentry
+SENTRY_DSN = settings.sentry_dsn
+SENTRY_ENVIRONMENT = settings.sentry_environment
+SENTRY_TRACES_SAMPLE_RATE = settings.sentry_traces_sample_rate
+ENABLE_PROMETHEUS = settings.enable_prometheus
+PROMETHEUS_PORT = settings.prometheus_port
+
+# Tracing
+ENABLE_TRACING = settings.enable_tracing
+OTEL_SERVICE_NAME = settings.otel_service_name
+OTEL_EXPORTER_OTLP_ENDPOINT = settings.otel_exporter_otlp_endpoint
+
+
+# Redis Cache
+REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+ENABLE_CACHE: bool = os.getenv("ENABLE_CACHE", "true").lower() == "true"
+
+
 def validate_config() -> None:
-    """Validate required configuration"""
-    if not TELEGRAM_BOT_TOKEN:
-        raise ValueError("TELEGRAM_BOT_TOKEN is required")
-    if not ALLOWED_TELEGRAM_IDS or ALLOWED_TELEGRAM_IDS == [""]:
-        raise ValueError("ALLOWED_TELEGRAM_IDS is required")
-    if not DATABASE_URL:
-        raise ValueError("DATABASE_URL is required")
-    # API keys are optional for MVP (using mock vision AI)
+    """
+    Validate configuration (deprecated - validation happens automatically on import).
+
+    This function is kept for backward compatibility but no longer does anything.
+    Configuration validation now happens automatically when Settings is instantiated.
+    """
+    # Validation happens automatically on Settings instantiation
+    pass

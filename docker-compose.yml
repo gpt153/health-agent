@@ -29,6 +29,22 @@ services:
       timeout: 5s
       retries: 5
 
+  # Redis Cache (for performance optimization)
+  # Used for caching user preferences, nutrition data, and conversation history
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
   # Production Telegram Bot (always running)
   # Polls Telegram API for user messages
   # RUN_MODE=bot ensures no conflicts with dev API
@@ -37,8 +53,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/health_agent
+      REDIS_URL: redis://redis:6379/0
       DATA_PATH: /app/data
       RUN_MODE: bot  # bot, api, or both
     env_file:
@@ -56,8 +75,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/health_agent
+      REDIS_URL: redis://redis:6379/0
       DATA_PATH: /app/data
       RUN_MODE: api
       API_HOST: 0.0.0.0
@@ -73,3 +95,4 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:

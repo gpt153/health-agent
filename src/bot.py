@@ -5,7 +5,7 @@ from pathlib import Path
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import telegram.error
-from src.config import TELEGRAM_BOT_TOKEN, DATA_PATH, TELEGRAM_TOPIC_FILTER
+from src.config import TELEGRAM_BOT_TOKEN, DATA_PATH, TELEGRAM_TOPIC_FILTER, ENABLE_SENTRY
 from src.utils.auth import is_authorized
 from src.db.queries import (
     save_conversation_message,
@@ -16,7 +16,7 @@ from src.db.queries import (
     get_tool_by_name,
     get_pending_approvals,
 )
-from src.memory.file_manager import memory_manager
+from src.memory.db_manager import db_memory_manager as memory_manager
 from src.memory.mem0_manager import mem0_manager
 from src.agent import get_agent_response
 from src.agent.dynamic_tools import tool_manager
@@ -43,14 +43,48 @@ from src.handlers.reminders import (
     note_skip_handler
 )
 from src.gamification.integrations import (
+    handle_food_entry_gamification,
     handle_sleep_quiz_gamification,
     handle_tracking_entry_gamification
+)
+from src.handlers.custom_tracking import (
+    tracker_creation_handler,
+    tracker_logging_handler,
+    tracker_viewing_handler,
+    my_trackers_command
 )
 
 logger = logging.getLogger(__name__)
 
 # Global reminder manager (will be initialized in create_bot_application)
 reminder_manager = None
+
+
+def init_bot_monitoring():
+    """Initialize monitoring for Telegram bot"""
+    if ENABLE_SENTRY:
+        from src.monitoring import init_sentry
+        init_sentry()
+        logger.info("Sentry monitoring initialized for bot")
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle errors in bot"""
+    logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
+
+    # Capture in Sentry
+    if ENABLE_SENTRY:
+        from src.monitoring import capture_exception
+
+        # Add context
+        extra = {}
+        if update and hasattr(update, 'effective_user') and update.effective_user:
+            extra['user_id'] = str(update.effective_user.id)
+        if update and hasattr(update, 'effective_message') and update.effective_message:
+            if hasattr(update.effective_message, 'text'):
+                extra['message_text'] = str(update.effective_message.text)[:200]  # Limit length
+
+        capture_exception(context.error, **extra)
 
 
 def should_process_message(update: Update) -> bool:
@@ -149,8 +183,8 @@ async def auto_save_user_info(user_id: str, user_message: str, agent_response: s
         with open("/tmp/autosave_called.txt", "a") as f:
             from datetime import datetime
             f.write(f"{datetime.now()}: User {user_id} - {user_message[:50]}\n")
-    except:
-        pass
+    except (IOError, OSError) as e:
+        logger.debug(f"Failed to write debug file: {e}")
 
     try:
         from openai import AsyncOpenAI
@@ -223,9 +257,15 @@ IMPORTANT:
                 info = extraction.get("information", "")
 
                 if info:
-                    # Save directly to memory
-                    await memory_manager.save_observation(user_id, category, info)
-                    logger.info(f"[AUTO-SAVE] Saved to '{category}': {info[:50]}...")
+                    # Save directly to Mem0 (replaces save_observation)
+                    from src.memory.mem0_manager import mem0_manager
+                    mem0_manager.add_message(
+                        user_id,
+                        info,
+                        role="user",
+                        metadata={"type": "auto_extracted", "category": category}
+                    )
+                    logger.info(f"[AUTO-SAVE] Saved to Mem0 '{category}': {info[:50]}...")
 
     except Exception as e:
         logger.error(f"Auto-save failed: {e}", exc_info=True)
@@ -240,6 +280,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     # Get service container
+    from src.services.container import get_container
     container = get_container()
     user_service = container.user_service
 
@@ -302,6 +343,7 @@ async def onboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     # Get service container
+    from src.services.container import get_container
     container = get_container()
     user_service = container.user_service
 
@@ -345,6 +387,7 @@ async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     # Get service container
+    from src.services.container import get_container
     container = get_container()
     user_service = container.user_service
 
@@ -537,25 +580,32 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 **What I can do:**
 - 📸 Analyze food photos for calories & macros
 - 💬 Chat naturally about your health goals
-- 📊 Track custom metrics (sleep, workouts, etc.)
+- 📊 Track custom metrics (period, energy, mood, etc.)
 - 🎯 Personalize my responses to your preferences
 - 📝 Remember your goals and patterns
+- 🔍 Analyze patterns in your tracked data
 
-**Commands:**
+**Core Commands:**
 /start - Reset and start over
 /transparency - See what data I have about you
 /settings - View and change your preferences
 /clear - Clear conversation history (fresh start)
 /help - Show this help message
 
+**Custom Tracking Commands:**
+/create_tracker - Create a new health tracker
+/log_tracker - Log an entry to a tracker
+/view_tracker - View your tracked data
+/my_trackers - List all your trackers
+
 **Tips:**
 - Send a food photo to log meals automatically
-- Ask me to track anything: "Track my sleep quality"
+- Create custom trackers for anything: period cycles, symptoms, energy, medications
+- Ask me about your data: "How has my energy been this week?"
 - Change preferences: "Be more brief" or "Use casual tone"
-- Ask questions: "What did I eat yesterday?"
 
 **Privacy:**
-All your data is stored locally in markdown files. You have full control and can delete anything anytime."""
+All your data is stored securely. You have full control and can delete anything anytime."""
 
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -699,368 +749,642 @@ async def pending_approvals_command(update: Update, context: ContextTypes.DEFAUL
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle text messages"""
+    """
+    Handle text messages - main entry point for message processing.
+
+    This function orchestrates message handling by:
+    1. Validating input and authorization
+    2. Extracting user context
+    3. Routing to appropriate handler
+
+    The actual processing is delegated to specialized handlers.
+    """
+    from src.handlers.message_helpers import validate_message_input, extract_message_context
+    from src.handlers.message_routing import route_message
+
     user_id = str(update.effective_user.id)
+    text = update.message.text
+
+    logger.info(f"Message from {user_id}: {text[:50]}...")
+
+    # Step 1: Validate input
+    validation = await validate_message_input(update, user_id)
+    if not validation.is_valid:
+        logger.debug(f"Message ignored: {validation.reason}")
+        return
+
+    # Step 2: Extract context
+    msg_context = await extract_message_context(user_id, context)
+
+    # Step 3: Route to handler
+    await route_message(update, context, msg_context, text)
+
+
+async def _validate_photo_input(update: Update) -> tuple[bool, str]:
+    """
+    Validate photo input (authorization and topic filter).
+
+    Returns:
+        tuple[bool, str]: (is_valid, user_id)
+    """
+    user_id = str(update.effective_user.id)
+
+    # Check authorization
+    if not await is_authorized(user_id):
+        return False, user_id
 
     # Check topic filter
     if not should_process_message(update):
-        return
+        return False, user_id
 
-    text = update.message.text
-    logger.info(f"Message from {user_id}: {text[:50]}...")
+    logger.info(f"Photo received from {user_id}")
+    return True, user_id
 
-    # Get service container
-    container = get_container()
-    user_service = container.user_service
 
-    # Check if user is pending activation
-    subscription = await user_service.get_subscription_status(user_id)
+async def _download_and_save_photo(update: Update, user_id: str) -> tuple[Path, str | None]:
+    """
+    Download photo and save to user's directory.
 
-    if subscription and subscription['status'] == 'pending':
-        # User is pending, check if message looks like an invite code
-        # Invite codes are typically uppercase alphanumeric, 6-20 chars
-        message_clean = text.strip().upper()
-        if len(message_clean) >= 4 and len(message_clean) <= 50 and message_clean.replace(' ', '').isalnum():
-            # Looks like a code, try to activate
-            await activate(update, context)
-            return
-        else:
-            # Not a code, remind user to activate
-            await update.message.reply_text(
-                "⚠️ **Please activate your account first**\n\n"
-                "Send your invite code to start using the bot.\n\n"
-                "Example: `HEALTH2024`\n\n"
-                "Don't have a code? Use /start to get more information."
-            )
-            return
+    Args:
+        update: Telegram update object
+        user_id: User ID
 
-    # Check if user is in onboarding
-    onboarding = await user_service.get_onboarding_state(user_id)
-    if onboarding and not onboarding.get('completed_at'):
-        # Route to onboarding handler
-        await handle_onboarding_message(update, context)
-        return
+    Returns:
+        tuple[Path, str | None]: (photo_path, caption)
+    """
+    # Send processing indicator
+    await update.message.reply_text("📸 Analyzing your food photo...")
+    await update.message.chat.send_action("typing")
 
-    # Check authorization (for active users)
-    is_auth = await user_service.is_authorized(user_id)
-    if not is_auth:
-        return
+    # Download photo
+    photo = update.message.photo[-1]  # Get highest resolution
+    file = await photo.get_file()
 
-    # Check if user is entering a custom note
-    if context.user_data.get('awaiting_custom_note'):
-        # Handle cancel command
-        if text.strip().lower() == '/cancel':
-            context.user_data.pop('awaiting_custom_note', None)
-            context.user_data.pop('pending_note', None)
-            await update.message.reply_text("✅ Note entry cancelled.")
-            return
+    # Save photo to user's data directory
+    photos_dir = DATA_PATH / user_id / "photos"
+    photos_dir.mkdir(parents=True, exist_ok=True)
 
-        # Get pending note data
-        pending_note = context.user_data.get('pending_note', {})
-        reminder_id = pending_note.get('reminder_id')
-        scheduled_time = pending_note.get('scheduled_time')
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    photo_path = photos_dir / f"{timestamp}.jpg"
+    await file.download_to_drive(photo_path)
 
-        if not reminder_id or not scheduled_time:
-            await update.message.reply_text("❌ Error: Missing note context. Please try again.")
-            context.user_data.pop('awaiting_custom_note', None)
-            context.user_data.pop('pending_note', None)
-            return
+    logger.info(f"Photo saved to {photo_path}")
 
-        # Trim note to max 200 characters
-        note_text = text.strip()[:200]
+    # Get caption if provided
+    caption = update.message.caption
+    if caption:
+        logger.info(f"Photo caption received: {caption}")
+    else:
+        logger.info("No caption provided with photo")
 
-        # Save the note
-        from src.db.queries import update_completion_note
-        try:
-            await update_completion_note(user_id, reminder_id, scheduled_time, note_text)
-            await update.message.reply_text(
-                f"✅ **Note saved!**\n\n📝 \"{note_text}\"\n\nThis will help track patterns over time.",
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.error(f"Error saving custom note: {e}", exc_info=True)
-            await update.message.reply_text("❌ Error saving note. Please try again.")
+    return photo_path, caption
 
-        # Clean up
-        context.user_data.pop('awaiting_custom_note', None)
-        context.user_data.pop('pending_note', None)
-        return
 
-    # DISABLED: Timezone check commented out for debugging
-    # Check if user has timezone set (first-time setup)
-    # from src.utils.timezone_helper import get_timezone_from_profile, suggest_timezones_for_language, update_timezone_in_profile, normalize_timezone
-    #
-    # user_timezone = get_timezone_from_profile(user_id)
-    # if not user_timezone:
-    #     # Check if message looks like a timezone string (e.g., "America/New_York")
-    #     if '/' in text and len(text.split()) == 1:
-    #         # Normalize timezone (handles case-insensitive input)
-    #         normalized_tz = normalize_timezone(text.strip())
-    #         if normalized_tz:
-    #             # Valid timezone - set it
-    #             if update_timezone_in_profile(user_id, normalized_tz):
-    #                 await update.message.reply_text(
-    #                     f"✅ Great! Your timezone is now set to **{normalized_tz}**.\n\n"
-    #                     f"You can start using the bot normally now!",
-    #                     parse_mode="Markdown"
-    #                 )
-    #                 return
-    #         else:
-    #             # Invalid timezone - show error
-    #             await update.message.reply_text(
-    #                 f"❌ Invalid timezone. Try \"America/New_York\" or share your location.",
-    #                 parse_mode="Markdown"
-    #             )
-    #             return
-    #
-    #     # New user - ask for timezone with smart suggestions
-    #     language_code = update.effective_user.language_code or 'en'
-    #     suggested_timezones = suggest_timezones_for_language(language_code)
-    #
-    #     timezone_list = "\n".join([f"• {tz}" for tz in suggested_timezones[:3]])
-    #
-    #     await update.message.reply_text(
-    #         f"👋 **Welcome! Let's set up your timezone first.**\n\n"
-    #         f"Based on your language ({language_code}), I suggest:\n{timezone_list}\n\n"
-    #         f"**Two ways to set your timezone:**\n"
-    #         f"1️⃣ Share your location (📎 → Location) - I'll detect it automatically\n"
-    #         f"2️⃣ Reply with your timezone (e.g., \"Europe/Stockholm\", \"America/New_York\")\n\n"
-    #         f"This helps me give you accurate time-based responses!",
-    #         parse_mode="Markdown"
-    #     )
-    #     return
+async def _gather_context_for_analysis(user_id: str, caption: str | None) -> tuple[str, str, str, str]:
+    """
+    Gather all context needed for photo analysis.
 
-    # Get AI response using PydanticAI agent
+    Args:
+        user_id: User ID
+        caption: Photo caption (optional)
+
+    Returns:
+        tuple[str, str, str, str]: (visual_patterns, mem0_context, food_history_context, habit_context)
+    """
+    # Load user's visual patterns for better recognition
+    user_memory = await memory_manager.load_user_memory(user_id)
+    visual_patterns = user_memory.get("visual_patterns", "")
+
+    # Task 4.1: Add Mem0 semantic search for relevant food context
+    from src.memory.mem0_manager import mem0_manager
+    mem0_context = ""
     try:
-        # Use persistent typing indicator during LLM processing
-        from src.utils.typing_indicator import PersistentTypingIndicator
+        food_memories = mem0_manager.search(
+            user_id,
+            query=f"food photo {caption if caption else 'meal'}",
+            limit=5
+        )
+        # Handle Mem0 returning dict with 'results' key or direct list
+        if isinstance(food_memories, dict):
+            food_memories = food_memories.get('results', [])
 
-        async with PersistentTypingIndicator(update.message.chat):
-            # Load conversation history from database (auto-filters unhelpful "I don't know" responses)
-            message_history = await get_conversation_history(user_id, limit=20)
+        if food_memories:
+            mem0_context = "\n\n**Relevant context from past conversations:**\n"
+            for mem in food_memories:
+                if isinstance(mem, dict):
+                    memory_text = mem.get('memory', mem.get('text', str(mem)))
+                elif isinstance(mem, str):
+                    memory_text = mem
+                else:
+                    memory_text = str(mem)
+                mem0_context += f"- {memory_text}\n"
+            logger.info(f"[PHOTO] Added {len(food_memories)} Mem0 memories to context")
+    except Exception as e:
+        logger.warning(f"[PHOTO] Failed to load Mem0 context: {e}")
 
-            # Route query to appropriate model (Haiku for simple, Sonnet for complex)
-            from src.utils.query_router import query_router
-            model_choice, routing_reason = query_router.route_query(text)
+    # Task 4.2: Include recent food history (last 7 days)
+    from datetime import timedelta
+    from src.db.queries import get_food_entries_by_date
+    food_history_context = ""
+    try:
+        recent_foods = await get_food_entries_by_date(
+            user_id,
+            start_date=(datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d'),
+            end_date=datetime.now().strftime('%Y-%m-%d')
+        )
 
-            # Select model based on routing
-            model_override = None
-            if model_choice == "haiku":
-                model_override = "anthropic:claude-3-5-haiku-latest"
-                logger.info(f"[ROUTER] Using Haiku for fast response: {routing_reason}")
+        if recent_foods:
+            # Summarize recent patterns
+            food_counts = {}
+            for entry in recent_foods:
+                foods_data = entry.get('foods', [])
+                if isinstance(foods_data, str):
+                    import json
+                    foods_data = json.loads(foods_data)
 
-            # Get agent response with conversation history
-            # Pass context.application for approval notifications
-            response = await get_agent_response(
-                user_id, text, memory_manager, reminder_manager, message_history,
-                bot_application=context.application,
-                model_override=model_override
+                for food in foods_data:
+                    food_name = food.get('food_name', food.get('name', 'unknown'))
+                    food_counts[food_name] = food_counts.get(food_name, 0) + 1
+
+            # Top 5 most logged foods
+            top_foods = sorted(food_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+            if top_foods:
+                food_history_context = "\n\n**Your recent eating patterns (last 7 days):**\n"
+                for food_name, count in top_foods:
+                    food_history_context += f"- {food_name} (logged {count}x this week)\n"
+                logger.info(f"[PHOTO] Added food history context with {len(top_foods)} items")
+    except Exception as e:
+        logger.warning(f"[PHOTO] Failed to load food history: {e}")
+
+    # Task 4.3: Apply food habits
+    from src.memory.habit_extractor import habit_extractor
+    habit_context = ""
+    try:
+        habits = await habit_extractor.get_user_habits(
+            user_id,
+            habit_type="food_prep",
+            min_confidence=0.6
+        )
+
+        if habits:
+            habit_context = "\n\n**User's food preparation habits:**\n"
+            for habit in habits:
+                habit_data = habit['habit_data']
+                food = habit_data.get('food', habit['habit_key'])
+                ratio = habit_data.get('ratio', '')
+                liquid = habit_data.get('liquid', '').replace('_', ' ')
+
+                habit_context += f"- {food}: Always prepared with {liquid}"
+                if ratio:
+                    habit_context += f" ({ratio} ratio)"
+                habit_context += f" (confidence: {habit['confidence']:.0%})\n"
+            logger.info(f"[PHOTO] Added {len(habits)} food habits to context")
+    except Exception as e:
+        logger.warning(f"[PHOTO] Failed to load habits: {e}")
+
+    return visual_patterns, mem0_context, food_history_context, habit_context
+
+
+async def _analyze_and_validate_nutrition(
+    photo_path: Path,
+    caption: str | None,
+    user_id: str,
+    visual_patterns: str,
+    mem0_context: str,
+    food_history_context: str,
+    habit_context: str
+):
+    """
+    Analyze photo with vision AI and validate nutrition data.
+
+    Returns:
+        tuple: (validated_analysis, validation_warnings, verified_foods)
+    """
+    # Epic 009 - Phase 4: Find similar reference image and generate portion comparison context
+    portion_context = None
+    try:
+        from src.services.portion_comparison import get_portion_comparison_service
+        portion_service = get_portion_comparison_service()
+
+        # Find reference image for comparison
+        reference = await portion_service.find_reference_image(
+            str(photo_path), user_id
+        )
+
+        if reference:
+            reference_photo, reference_entry_id, reference_date = reference
+            logger.info(f"[PORTION] Found reference image for comparison: {reference_photo}")
+
+            # Detect plate (if possible)
+            from src.services.plate_recognition import get_plate_recognition_service
+            plate_service = get_plate_recognition_service()
+            detected_plate = await plate_service.detect_plate_from_image(
+                str(photo_path), user_id, auto_match=True
             )
 
-        # Save user message and assistant response to database
-        await save_conversation_message(user_id, "user", text, message_type="text")
-        await save_conversation_message(user_id, "assistant", response, message_type="text")
+            # For now, we'll generate comparison after Vision AI analysis
+            # Store reference info for later use
+            portion_context = {
+                'reference_photo': reference_photo,
+                'reference_entry_id': reference_entry_id,
+                'reference_date': reference_date,
+                'plate': detected_plate
+            }
+    except Exception as e:
+        logger.warning(f"[PORTION] Failed to find reference image: {e}")
 
-        # Move Mem0 and auto-save to background tasks (don't block response)
-        async def background_memory_tasks():
-            """Run memory operations in background after response is sent"""
-            # Add to Mem0 for semantic memory and automatic fact extraction
-            mem0_manager.add_message(user_id, text, role="user", metadata={"message_type": "text"})
-            mem0_manager.add_message(user_id, response, role="assistant", metadata={"message_type": "text"})
+    # Analyze with vision AI (with all enhanced context)
+    analysis = await analyze_food_photo(
+        str(photo_path),
+        caption=caption,
+        user_id=user_id,
+        visual_patterns=visual_patterns,
+        semantic_context=mem0_context,
+        food_history=food_history_context,
+        food_habits=habit_context
+        # Note: portion_comparison_context will be added in Phase 4C after full integration
+    )
 
-            # Auto-save: Extract and save any personal information from the conversation
-            logger.info(f"[DEBUG-FLOW] BEFORE auto_save_user_info for user {user_id}")
-            logger.info(f"[DEBUG-FLOW] User message: {text[:100]}")
-            logger.info(f"[DEBUG-FLOW] Agent response: {response[:100]}")
-            await auto_save_user_info(user_id, text, response)
-            logger.info(f"[DEBUG-FLOW] AFTER auto_save_user_info completed successfully")
+    # Verify nutrition data with USDA database
+    from src.utils.nutrition_search import verify_food_items
+    verified_foods = await verify_food_items(analysis.foods)
 
-        # Schedule background task (fire and forget)
+    # Phase 1: Multi-Agent Validation
+    from src.agent.nutrition_validator import get_validator
+    validator = get_validator()
+
+    validated_analysis, validation_warnings = await validator.validate(
+        vision_result=analysis,
+        photo_path=str(photo_path),
+        caption=caption,
+        visual_patterns=visual_patterns,
+        usda_verified_items=verified_foods,
+        enable_cross_validation=True  # Enable multi-model cross-checking
+    )
+
+    # Use validated results
+    verified_foods = validated_analysis.foods
+
+    return validated_analysis, validation_warnings, verified_foods
+
+
+def _build_response_message(
+    caption: str | None,
+    verified_foods: list,
+    validated_analysis,
+    validation_warnings: list
+) -> tuple[str, dict]:
+    """
+    Build the response message with food analysis results.
+
+    Args:
+        caption: Photo caption
+        verified_foods: List of verified food items
+        validated_analysis: Validated analysis result
+        validation_warnings: List of validation warnings
+
+    Returns:
+        tuple[str, dict]: (response_message, totals_dict)
+    """
+    response_lines = ["🍽️ **Food Analysis:**"]
+    if caption:
+        response_lines.append(f"_Based on your description: \"{caption}\"_\n")
+    else:
+        response_lines.append("")
+
+    for food in verified_foods:
+        # Add verification badge
+        badge = ""
+        if food.verification_source == "usda":
+            badge = " ✓"  # Verified badge
+        elif food.verification_source == "ai_estimate":
+            badge = " ~"  # Estimate badge
+
+        response_lines.append(f"• {food.name}{badge} ({food.quantity})")
+
+        # Build macro line
+        macro_line = f"  └ {food.calories} cal | P: {food.macros.protein}g | C: {food.macros.carbs}g | F: {food.macros.fat}g"
+
+        # Add fiber and sodium if available
+        if food.macros.micronutrients:
+            micros = food.macros.micronutrients
+            if micros.fiber is not None:
+                macro_line += f" | Fiber: {micros.fiber}g"
+            if micros.sodium is not None:
+                macro_line += f" | Sodium: {micros.sodium}mg"
+
+        response_lines.append(macro_line)
+
+    # Calculate totals from verified data
+    total_calories = sum(f.calories for f in verified_foods)
+    total_protein = sum(f.macros.protein for f in verified_foods)
+    total_carbs = sum(f.macros.carbs for f in verified_foods)
+    total_fat = sum(f.macros.fat for f in verified_foods)
+
+    response_lines.append(f"\n**Total:** {total_calories} cal | P: {total_protein}g | C: {total_carbs}g | F: {total_fat}g")
+    response_lines.append(f"\n_Confidence: {validated_analysis.confidence}_")
+
+    # Add validation warnings if any
+    if validation_warnings:
+        response_lines.append("\n**⚠️ Validation Alerts:**")
+        for warning in validation_warnings:
+            response_lines.append(f"{warning}")
+
+    # Add clarifying questions if any
+    if validated_analysis.clarifying_questions:
+        response_lines.append("\n**Questions to improve accuracy:**")
+        for q in validated_analysis.clarifying_questions:
+            response_lines.append(f"• {q}")
+
+    totals = {
+        "calories": total_calories,
+        "protein": total_protein,
+        "carbs": total_carbs,
+        "fat": total_fat
+    }
+
+    return "\n".join(response_lines), totals
+
+
+async def _save_food_entry_with_habits(
+    user_id: str,
+    photo_path: Path,
+    verified_foods: list,
+    totals: dict,
+    validated_analysis,
+    caption: str | None
+) -> FoodEntry:
+    """
+    Save food entry to database and trigger habit detection.
+
+    Args:
+        user_id: User ID
+        photo_path: Path to saved photo
+        verified_foods: List of verified food items
+        totals: Dictionary with total macros
+        validated_analysis: Validated analysis result
+        caption: Photo caption
+
+    Returns:
+        FoodEntry: Saved food entry object
+    """
+    from src.models.food import FoodMacros
+
+    total_macros = FoodMacros(
+        protein=totals["protein"],
+        carbs=totals["carbs"],
+        fat=totals["fat"]
+    )
+
+    # Use extracted timestamp from caption if available, otherwise current time
+    entry_timestamp = validated_analysis.timestamp if validated_analysis.timestamp else datetime.now()
+
+    entry = FoodEntry(
+        user_id=user_id,
+        timestamp=entry_timestamp,
+        photo_path=str(photo_path),
+        foods=verified_foods,  # Use verified data instead of AI estimates
+        total_calories=totals["calories"],
+        total_macros=total_macros,
+        meal_type=None,  # Can be inferred from time later
+        notes=caption or None
+    )
+
+    await save_food_entry(entry)
+    logger.info(f"Saved food entry for {user_id}")
+
+    # Generate and store image embedding for visual search (Epic 009 - Phase 1)
+    # This runs in the background and doesn't block the user experience
+    try:
+        from src.services.visual_food_search import get_visual_search_service
+        visual_search = get_visual_search_service()
+
+        # Store embedding asynchronously (will be generated automatically)
+        # Using entry.id from the saved entry
         import asyncio
-        asyncio.create_task(background_memory_tasks())
+        asyncio.create_task(
+            visual_search.store_image_embedding(
+                food_entry_id=str(entry.id),
+                user_id=user_id,
+                photo_path=str(photo_path)
+            )
+        )
+        logger.info(f"[VISUAL_SEARCH] Queued embedding generation for entry {entry.id}")
+    except Exception as e:
+        logger.warning(f"[VISUAL_SEARCH] Failed to queue embedding: {e}")
+        # Continue - visual search shouldn't block food logging
 
-        # Send response - try with Markdown first, fallback to plain text if parsing fails
-        try:
-            await update.message.reply_text(response, parse_mode="Markdown")
-            logger.info(f"Sent AI response to {user_id}")
-        except telegram.error.BadRequest as e:
-            if "can't parse entities" in str(e).lower():
-                # Markdown parsing failed, send as plain text
-                logger.warning(f"Markdown parse error, sending as plain text: {e}")
-                await update.message.reply_text(response)
-            else:
-                raise
+    # Detect and recognize plates for calibration (Epic 009 - Phase 2)
+    # This runs in the background and doesn't block the user experience
+    try:
+        from src.services.plate_recognition import get_plate_recognition_service
+        from src.models.plate import PlateMetadata
+
+        plate_service = get_plate_recognition_service()
+
+        async def detect_and_link_plate():
+            """Background task to detect and link plate"""
+            try:
+                # Detect plate from image
+                detected_plate = await plate_service.detect_plate_from_image(
+                    str(photo_path),
+                    user_id
+                )
+
+                if detected_plate:
+                    # Try to match against user's existing plates
+                    matched_plate = await plate_service.match_plate(
+                        detected_plate.embedding,
+                        user_id,
+                        threshold=0.85
+                    )
+
+                    # Register new plate if no match found
+                    if not matched_plate:
+                        matched_plate = await plate_service.register_new_plate(
+                            user_id,
+                            detected_plate.embedding,
+                            detected_plate.metadata
+                        )
+                        logger.info(
+                            f"[PLATE_RECOGNITION] Registered new plate: {matched_plate.plate_name}"
+                        )
+
+                    # Link food entry to plate
+                    await plate_service.link_food_entry_to_plate(
+                        food_entry_id=str(entry.id),
+                        recognized_plate_id=matched_plate.id,
+                        user_id=user_id,
+                        confidence_score=detected_plate.confidence,
+                        detection_method="auto_detected"
+                    )
+
+                    logger.info(
+                        f"[PLATE_RECOGNITION] Linked entry {entry.id} to plate {matched_plate.plate_name} "
+                        f"(confidence: {detected_plate.confidence:.2f})"
+                    )
+
+                    # If user provided accurate portions and plate is not calibrated,
+                    # we could potentially calibrate here (future enhancement)
+
+            except Exception as e:
+                logger.warning(f"[PLATE_RECOGNITION] Background plate detection failed: {e}")
+                # Failures in plate recognition shouldn't affect food logging
+
+        # Queue plate detection in background
+        import asyncio
+        asyncio.create_task(detect_and_link_plate())
+        logger.info(f"[PLATE_RECOGNITION] Queued plate detection for entry {entry.id}")
 
     except Exception as e:
-        logger.error(f"Error in handle_message: {e}", exc_info=True)
-        await update.message.reply_text(
-            "Sorry, I encountered an error. Please try again!"
-        )
+        logger.warning(f"[PLATE_RECOGNITION] Failed to queue plate detection: {e}")
+        # Continue - plate recognition shouldn't block food logging
+
+    # Trigger habit detection for food patterns
+    from src.memory.habit_extractor import habit_extractor
+    try:
+        for food_item in entry.foods:
+            parsed_components = {
+                "food": food_item.food_name,
+                "quantity": f"{food_item.quantity} {food_item.unit}",
+                "preparation": food_item.food_name  # Could be enhanced
+            }
+            await habit_extractor.detect_food_prep_habit(
+                user_id,
+                food_item.food_name,
+                parsed_components
+            )
+    except Exception as e:
+        logger.warning(f"[HABITS] Failed to detect habits: {e}")
+        # Continue - habit detection shouldn't block food logging
+
+    return entry
+
+
+async def _process_gamification(user_id: str, entry: FoodEntry) -> str:
+    """
+    Process gamification (XP, streaks, achievements) and log feature usage.
+
+    Args:
+        user_id: User ID
+        entry: Food entry object
+
+    Returns:
+        str: Gamification message to append to response
+    """
+    # Process gamification (XP, streaks, achievements)
+    meal_type = entry.meal_type or "snack"  # Default if not set
+    gamification_result = await handle_food_entry_gamification(
+        user_id=user_id,
+        food_entry_id=entry.id,
+        logged_at=entry.timestamp,
+        meal_type=meal_type
+    )
+
+    # Log feature usage
+    from src.db.queries import log_feature_usage
+    await log_feature_usage(user_id, "food_tracking")
+
+    # Return gamification message if available
+    gamification_msg = gamification_result.get('message', '')
+    if gamification_msg:
+        return f"\n🎯 **PROGRESS**\n{gamification_msg}"
+    return ""
+
+
+async def _send_response_and_log(
+    update: Update,
+    user_id: str,
+    response_message: str,
+    verified_foods: list,
+    totals: dict,
+    validated_analysis,
+    validation_warnings: list
+) -> None:
+    """
+    Send response to user and save to conversation history.
+
+    Args:
+        update: Telegram update object
+        user_id: User ID
+        response_message: Formatted response message
+        verified_foods: List of verified food items
+        totals: Dictionary with total macros
+        validated_analysis: Validated analysis result
+        validation_warnings: List of validation warnings
+    """
+    # Send response
+    await update.message.reply_text(response_message, parse_mode="Markdown")
+
+    # Save to conversation history database with metadata
+    photo_description = f"User sent a food photo. Analysis: {', '.join([f.name for f in verified_foods])}"
+    photo_metadata = {
+        "foods": [{"name": f.name, "quantity": f.quantity, "verification_source": f.verification_source} for f in verified_foods],
+        "total_calories": totals["calories"],
+        "confidence": validated_analysis.confidence,
+        "validation_warnings": validation_warnings if validation_warnings else None
+    }
+
+    await save_conversation_message(
+        user_id, "user", photo_description, message_type="photo", metadata=photo_metadata
+    )
+    await save_conversation_message(
+        user_id, "assistant", response_message, message_type="photo_response"
+    )
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle food photos"""
-    user_id = str(update.effective_user.id)
+    """
+    Handle food photos - orchestrates the complete photo analysis workflow.
 
-    # Get service container
-    container = get_container()
-    user_service = container.user_service
-    food_service = container.food_service
-    gamification_service = container.gamification_service
-
-    # Check authorization
-    is_auth = await user_service.is_authorized(user_id)
-    if not is_auth:
+    This function follows Single Responsibility Principle by delegating to specialized helpers:
+    - Validation: _validate_photo_input()
+    - Download: _download_and_save_photo()
+    - Context: _gather_context_for_analysis()
+    - Analysis: _analyze_and_validate_nutrition()
+    - Response: _build_response_message()
+    - Storage: _save_food_entry_with_habits()
+    - Gamification: _process_gamification()
+    - Notification: _send_response_and_log()
+    """
+    # Step 1: Validate input
+    is_valid, user_id = await _validate_photo_input(update)
+    if not is_valid:
         return
-
-    # Check topic filter
-    if not should_process_message(update):
-        return
-
-    logger.info(f"Photo received from {user_id}")
 
     try:
-        # Send processing indicator
-        await update.message.reply_text("📸 Analyzing your food photo...")
-        await update.message.chat.send_action("typing")
+        # Step 2: Download and save photo
+        photo_path, caption = await _download_and_save_photo(update, user_id)
 
-        # Download photo
-        photo = update.message.photo[-1]  # Get highest resolution
-        file = await photo.get_file()
-
-        # Save photo to user's data directory
-        photos_dir = DATA_PATH / user_id / "photos"
-        photos_dir.mkdir(parents=True, exist_ok=True)
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        photo_path = photos_dir / f"{timestamp}.jpg"
-        await file.download_to_drive(photo_path)
-
-        logger.info(f"Photo saved to {photo_path}")
-
-        # Get caption if provided
-        caption = update.message.caption
-        if caption:
-            logger.info(f"Photo caption received: {caption}")
-        else:
-            logger.info("No caption provided with photo")
-
-        # Analyze food photo using FoodService (handles all context loading, validation, etc.)
-        analysis_result = await food_service.analyze_food_photo(
-            user_id=user_id,
-            photo_path=str(photo_path),
-            caption=caption
+        # Step 3: Gather context for analysis
+        visual_patterns, mem0_context, food_history, habit_context = await _gather_context_for_analysis(
+            user_id, caption
         )
 
-        # Extract validated results
-        verified_foods = analysis_result['foods']
-        total_calories = analysis_result['total_calories']
-        total_macros = analysis_result['total_macros']
-        confidence = analysis_result['confidence']
-        validation_warnings = analysis_result['validation_warnings']
-        clarifying_questions = analysis_result['clarifying_questions']
-        entry_timestamp = analysis_result['timestamp']
-
-        # Build response message
-        response_lines = ["🍽️ **Food Analysis:**"]
-        if caption:
-            response_lines.append(f"_Based on your description: \"{caption}\"_\n")
-        else:
-            response_lines.append("")
-
-        for food in verified_foods:
-            # Add verification badge
-            badge = ""
-            if food.verification_source == "usda":
-                badge = " ✓"  # Verified badge
-            elif food.verification_source == "ai_estimate":
-                badge = " ~"  # Estimate badge
-
-            response_lines.append(f"• {food.name}{badge} ({food.quantity})")
-
-            # Build macro line
-            macro_line = f"  └ {food.calories} cal | P: {food.macros.protein}g | C: {food.macros.carbs}g | F: {food.macros.fat}g"
-
-            # Add fiber and sodium if available
-            if food.macros.micronutrients:
-                micros = food.macros.micronutrients
-                if micros.fiber is not None:
-                    macro_line += f" | Fiber: {micros.fiber}g"
-                if micros.sodium is not None:
-                    macro_line += f" | Sodium: {micros.sodium}mg"
-
-            response_lines.append(macro_line)
-
-        response_lines.append(f"\n**Total:** {total_calories} cal | P: {total_macros.protein}g | C: {total_macros.carbs}g | F: {total_macros.fat}g")
-        response_lines.append(f"\n_Confidence: {confidence}_")
-
-        # Add validation warnings if any
-        if validation_warnings:
-            response_lines.append("\n**⚠️ Validation Alerts:**")
-            for warning in validation_warnings:
-                response_lines.append(f"{warning}")
-
-        # Add clarifying questions if any
-        if clarifying_questions:
-            response_lines.append("\n**Questions to improve accuracy:**")
-            for q in clarifying_questions:
-                response_lines.append(f"• {q}")
-
-        # Log food entry using FoodService
-        log_result = await food_service.log_food_entry(
-            user_id=user_id,
-            photo_path=str(photo_path),
-            foods=verified_foods,
-            total_calories=total_calories,
-            total_macros=total_macros,
-            timestamp=entry_timestamp,
-            notes=caption
+        # Step 4: Analyze and validate nutrition
+        validated_analysis, validation_warnings, verified_foods = await _analyze_and_validate_nutrition(
+            photo_path, caption, user_id, visual_patterns, mem0_context, food_history, habit_context
         )
 
-        if not log_result['success']:
-            logger.error(f"Failed to log food entry: {log_result['message']}")
-            await update.message.reply_text("⚠️ Food analyzed but failed to save. Please try again.")
-            return
-
-        entry = log_result['entry']
-        logger.info(f"Saved food entry for {user_id}, entry_id: {log_result['entry_id']}")
-
-        # Process gamification (XP, streaks, achievements)
-        meal_type = entry.meal_type or "snack"  # Default if not set
-        gamification_result = await gamification_service.process_food_entry(
-            user_id=user_id,
-            food_entry_id=str(entry.id),
-            logged_at=entry.timestamp,
-            meal_type=meal_type
+        # Step 5: Build response message
+        response_message, totals = _build_response_message(
+            caption, verified_foods, validated_analysis, validation_warnings
         )
 
-        # Log feature usage
-        from src.db.queries import log_feature_usage
-        await log_feature_usage(user_id, "food_tracking")
+        # Step 6: Save food entry with habit detection
+        entry = await _save_food_entry_with_habits(
+            user_id, photo_path, verified_foods, totals, validated_analysis, caption
+        )
 
-        # Add gamification to response if available
-        gamification_msg = gamification_result.get('message', '')
+        # Step 7: Process gamification
+        gamification_msg = await _process_gamification(user_id, entry)
         if gamification_msg:
-            response_lines.append(f"\n🎯 **PROGRESS**\n{gamification_msg}")
+            response_message += gamification_msg
 
-        # Send response
-        response = "\n".join(response_lines)
-        await update.message.reply_text(response, parse_mode="Markdown")
-
-        # Save to conversation history database with metadata
-        photo_description = f"User sent a food photo. Analysis: {', '.join([f.name for f in verified_foods])}"
-        photo_metadata = {
-            "foods": [{"name": f.name, "quantity": f.quantity, "verification_source": f.verification_source} for f in verified_foods],
-            "total_calories": total_calories,
-            "confidence": validated_analysis.confidence,
-            "validation_warnings": validation_warnings if validation_warnings else None
-        }
-
-        await save_conversation_message(
-            user_id, "user", photo_description, message_type="photo", metadata=photo_metadata
-        )
-        await save_conversation_message(
-            user_id, "assistant", response, message_type="photo_response"
+        # Step 8: Send response and log to conversation history
+        await _send_response_and_log(
+            update, user_id, response_message, verified_foods, totals, validated_analysis, validation_warnings
         )
 
     except Exception as e:
@@ -1208,7 +1532,16 @@ def create_bot_application() -> Application:
     """Create and configure the bot application"""
     global reminder_manager
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    # Initialize monitoring
+    init_bot_monitoring()
+
+    # Build application with job_queue support enabled for reminder scheduling
+    app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .job_queue()  # CRITICAL: Enable job_queue for reminder scheduler
+        .build()
+    )
 
     # Initialize reminder manager
     reminder_manager = ReminderManager(app)
@@ -1236,6 +1569,13 @@ def create_bot_application() -> Application:
     app.add_handler(sleep_settings_handler)
     logger.info("Sleep settings handler registered")
 
+    # Epic 006: Custom tracker handlers
+    app.add_handler(tracker_creation_handler)
+    app.add_handler(tracker_logging_handler)
+    app.add_handler(tracker_viewing_handler)
+    app.add_handler(CommandHandler("my_trackers", my_trackers_command))
+    logger.info("Custom tracking handlers registered (create, log, view, list)")
+
     # Add callback query handlers
     app.add_handler(reminder_completion_handler)
     app.add_handler(reminder_skip_handler)
@@ -1261,6 +1601,10 @@ def create_bot_application() -> Application:
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.LOCATION, handle_location))
+
+    # Add error handler
+    app.add_error_handler(error_handler)
+    logger.info("Error handler registered")
 
     logger.info("Bot application created")
     return app

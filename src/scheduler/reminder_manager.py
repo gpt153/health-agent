@@ -17,6 +17,16 @@ class ReminderManager:
         self.application = application
         self.job_queue = application.job_queue
 
+        # CRITICAL: Validate job_queue is initialized
+        if self.job_queue is None:
+            raise RuntimeError(
+                "Application job_queue is None. Ensure Application is built with "
+                ".job_queue() in the builder chain: "
+                "Application.builder().token(...).job_queue().build()"
+            )
+
+        logger.info(f"ReminderManager initialized with JobQueue: {type(self.job_queue).__name__}")
+
     async def load_reminders(self) -> None:
         """Load all active reminders from database and schedule them"""
         logger.info("Loading reminders from database...")
@@ -35,6 +45,14 @@ class ReminderManager:
                 reminder_id = str(reminder["id"])  # Get reminder UUID
                 reminder_type = reminder["reminder_type"]
                 message = reminder["message"]
+
+                # Validate required fields
+                if not user_id or not message:
+                    logger.warning(
+                        f"⚠️  Skipping invalid reminder {reminder_id}: "
+                        f"missing user_id or message"
+                    )
+                    continue
 
                 # Parse schedule JSON
                 schedule = json.loads(reminder["schedule"]) if isinstance(reminder["schedule"], str) else reminder["schedule"]
@@ -57,10 +75,17 @@ class ReminderManager:
 
                 scheduled_count += 1
 
-            logger.info(f"Loaded and scheduled {scheduled_count} reminders from database")
+            # Log detailed scheduler state
+            total_jobs = len(self.job_queue.jobs())
+            logger.info(
+                f"✅ Loaded and scheduled {scheduled_count} reminders from database. "
+                f"JobQueue now has {total_jobs} total jobs."
+            )
 
         except Exception as e:
-            logger.error(f"Failed to load reminders: {e}", exc_info=True)
+            logger.error(f"❌ Failed to load reminders: {e}", exc_info=True)
+            # Re-raise to make failure visible during startup
+            raise
 
     async def schedule_tracking_reminder(
         self, user_id: str, category_name: str, reminder_time: str, message: str, user_timezone: str = "UTC"
@@ -127,8 +152,21 @@ class ReminderManager:
             reminder_date: Date string in YYYY-MM-DD format (required for reminder_type="once")
         """
         try:
+            # Validate time format
+            if not reminder_time or ":" not in reminder_time:
+                logger.error(f"Invalid time format for reminder {reminder_id}: {reminder_time}")
+                return
+
             # Parse time and apply user's timezone
-            hour, minute = map(int, reminder_time.split(":"))
+            hour, minute = map(int, reminder_time.split(":")[:2])
+
+            # Validate time range
+            if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+                logger.error(
+                    f"Time out of range for reminder {reminder_id}: "
+                    f"{hour:02d}:{minute:02d}"
+                )
+                return
 
             # Create timezone-aware time
             tz = ZoneInfo(user_timezone)
@@ -385,8 +423,8 @@ class ReminderManager:
             current_weekday = now_user.weekday()  # 0=Monday, 6=Sunday
 
             if current_weekday not in scheduled_days:
-                logger.debug(
-                    f"Skipping reminder {reminder_id} for {user_id}: "
+                logger.info(
+                    f"⏭️  Skipping reminder {reminder_id} for {user_id}: "
                     f"Today ({current_weekday}) not in scheduled days {scheduled_days}"
                 )
                 return  # Don't send reminder today
@@ -478,10 +516,16 @@ class ReminderManager:
                     parse_mode="Markdown"
                 )
 
-            logger.info(f"Sent custom reminder to {user_id} (tracking={enable_tracking}, streak={streak_count})")
+            logger.info(
+                f"✅ Sent custom reminder {reminder_id} to {user_id} "
+                f"(tracking={enable_tracking}, streak={streak_count})"
+            )
 
         except Exception as e:
-            logger.error(f"Failed to send custom reminder: {e}", exc_info=True)
+            logger.error(
+                f"❌ Failed to send custom reminder {reminder_id} to {user_id}: {e}",
+                exc_info=True
+            )
 
     async def list_user_reminders(self, user_id: str) -> list[dict]:
         """

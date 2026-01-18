@@ -108,7 +108,8 @@ def normalize_timezone(timezone_input: str) -> str | None:
     try:
         pytz.timezone(timezone_input)
         return timezone_input
-    except:
+    except pytz.exceptions.UnknownTimeZoneError:
+        # Not a valid timezone, will try case-insensitive matching next
         pass
 
     # Try case-insensitive matching
