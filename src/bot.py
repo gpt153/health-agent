@@ -8,7 +8,6 @@ import telegram.error
 from src.config import TELEGRAM_BOT_TOKEN, DATA_PATH, TELEGRAM_TOPIC_FILTER
 from src.utils.auth import is_authorized
 from src.db.queries import (
-    save_food_entry,
     save_conversation_message,
     get_conversation_history,
     clear_conversation_history,
@@ -21,9 +20,7 @@ from src.memory.file_manager import memory_manager
 from src.memory.mem0_manager import mem0_manager
 from src.agent import get_agent_response
 from src.agent.dynamic_tools import tool_manager
-from src.utils.vision import analyze_food_photo
 from src.utils.voice import transcribe_voice
-from src.models.food import FoodEntry
 from src.scheduler.reminder_manager import ReminderManager
 from src.services.container import get_container
 from src.handlers.onboarding import (
@@ -906,8 +903,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Handle food photos"""
     user_id = str(update.effective_user.id)
 
+    # Get service container
+    container = get_container()
+    user_service = container.user_service
+    food_service = container.food_service
+
     # Check authorization
-    if not await is_authorized(user_id):
+    is_auth = await user_service.is_authorized(user_id)
+    if not is_auth:
         return
 
     # Check topic filter
@@ -942,128 +945,21 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         else:
             logger.info("No caption provided with photo")
 
-        # Load user's visual patterns for better recognition
-        user_memory = await memory_manager.load_user_memory(user_id)
-        visual_patterns = user_memory.get("visual_patterns", "")
-
-        # Task 4.1: Add Mem0 semantic search for relevant food context
-        from src.memory.mem0_manager import mem0_manager
-        mem0_context = ""
-        try:
-            food_memories = mem0_manager.search(
-                user_id,
-                query=f"food photo {caption if caption else 'meal'}",
-                limit=5
-            )
-            # Handle Mem0 returning dict with 'results' key or direct list
-            if isinstance(food_memories, dict):
-                food_memories = food_memories.get('results', [])
-
-            if food_memories:
-                mem0_context = "\n\n**Relevant context from past conversations:**\n"
-                for mem in food_memories:
-                    if isinstance(mem, dict):
-                        memory_text = mem.get('memory', mem.get('text', str(mem)))
-                    elif isinstance(mem, str):
-                        memory_text = mem
-                    else:
-                        memory_text = str(mem)
-                    mem0_context += f"- {memory_text}\n"
-                logger.info(f"[PHOTO] Added {len(food_memories)} Mem0 memories to context")
-        except Exception as e:
-            logger.warning(f"[PHOTO] Failed to load Mem0 context: {e}")
-
-        # Task 4.2: Include recent food history (last 7 days)
-        from datetime import timedelta
-        from src.db.queries import get_food_entries_by_date
-        food_history_context = ""
-        try:
-            recent_foods = await get_food_entries_by_date(
-                user_id,
-                start_date=(datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d'),
-                end_date=datetime.now().strftime('%Y-%m-%d')
-            )
-
-            if recent_foods:
-                # Summarize recent patterns
-                food_counts = {}
-                for entry in recent_foods:
-                    foods_data = entry.get('foods', [])
-                    if isinstance(foods_data, str):
-                        import json
-                        foods_data = json.loads(foods_data)
-
-                    for food in foods_data:
-                        food_name = food.get('food_name', food.get('name', 'unknown'))
-                        food_counts[food_name] = food_counts.get(food_name, 0) + 1
-
-                # Top 5 most logged foods
-                top_foods = sorted(food_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-
-                if top_foods:
-                    food_history_context = "\n\n**Your recent eating patterns (last 7 days):**\n"
-                    for food_name, count in top_foods:
-                        food_history_context += f"- {food_name} (logged {count}x this week)\n"
-                    logger.info(f"[PHOTO] Added food history context with {len(top_foods)} items")
-        except Exception as e:
-            logger.warning(f"[PHOTO] Failed to load food history: {e}")
-
-        # Task 4.3: Apply food habits
-        from src.memory.habit_extractor import habit_extractor
-        habit_context = ""
-        try:
-            habits = await habit_extractor.get_user_habits(
-                user_id,
-                habit_type="food_prep",
-                min_confidence=0.6
-            )
-
-            if habits:
-                habit_context = "\n\n**User's food preparation habits:**\n"
-                for habit in habits:
-                    habit_data = habit['habit_data']
-                    food = habit_data.get('food', habit['habit_key'])
-                    ratio = habit_data.get('ratio', '')
-                    liquid = habit_data.get('liquid', '').replace('_', ' ')
-
-                    habit_context += f"- {food}: Always prepared with {liquid}"
-                    if ratio:
-                        habit_context += f" ({ratio} ratio)"
-                    habit_context += f" (confidence: {habit['confidence']:.0%})\n"
-                logger.info(f"[PHOTO] Added {len(habits)} food habits to context")
-        except Exception as e:
-            logger.warning(f"[PHOTO] Failed to load habits: {e}")
-
-        # Analyze with vision AI (with all enhanced context)
-        analysis = await analyze_food_photo(
-            str(photo_path),
-            caption=caption,
+        # Analyze food photo using FoodService (handles all context loading, validation, etc.)
+        analysis_result = await food_service.analyze_food_photo(
             user_id=user_id,
-            visual_patterns=visual_patterns,
-            semantic_context=mem0_context,
-            food_history=food_history_context,
-            food_habits=habit_context
-        )
-
-        # Verify nutrition data with USDA database
-        from src.utils.nutrition_search import verify_food_items
-        verified_foods = await verify_food_items(analysis.foods)
-
-        # Phase 1: Multi-Agent Validation
-        from src.agent.nutrition_validator import get_validator
-        validator = get_validator()
-
-        validated_analysis, validation_warnings = await validator.validate(
-            vision_result=analysis,
             photo_path=str(photo_path),
-            caption=caption,
-            visual_patterns=visual_patterns,
-            usda_verified_items=verified_foods,
-            enable_cross_validation=True  # Enable multi-model cross-checking
+            caption=caption
         )
 
-        # Use validated results
-        verified_foods = validated_analysis.foods
+        # Extract validated results
+        verified_foods = analysis_result['foods']
+        total_calories = analysis_result['total_calories']
+        total_macros = analysis_result['total_macros']
+        confidence = analysis_result['confidence']
+        validation_warnings = analysis_result['validation_warnings']
+        clarifying_questions = analysis_result['clarifying_questions']
+        entry_timestamp = analysis_result['timestamp']
 
         # Build response message
         response_lines = ["🍽️ **Food Analysis:**"]
@@ -1095,14 +991,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
             response_lines.append(macro_line)
 
-        # Calculate totals from verified data
-        total_calories = sum(f.calories for f in verified_foods)
-        total_protein = sum(f.macros.protein for f in verified_foods)
-        total_carbs = sum(f.macros.carbs for f in verified_foods)
-        total_fat = sum(f.macros.fat for f in verified_foods)
-
-        response_lines.append(f"\n**Total:** {total_calories} cal | P: {total_protein}g | C: {total_carbs}g | F: {total_fat}g")
-        response_lines.append(f"\n_Confidence: {validated_analysis.confidence}_")
+        response_lines.append(f"\n**Total:** {total_calories} cal | P: {total_macros.protein}g | C: {total_macros.carbs}g | F: {total_macros.fat}g")
+        response_lines.append(f"\n_Confidence: {confidence}_")
 
         # Add validation warnings if any
         if validation_warnings:
@@ -1111,54 +1001,29 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 response_lines.append(f"{warning}")
 
         # Add clarifying questions if any
-        if validated_analysis.clarifying_questions:
+        if clarifying_questions:
             response_lines.append("\n**Questions to improve accuracy:**")
-            for q in validated_analysis.clarifying_questions:
+            for q in clarifying_questions:
                 response_lines.append(f"• {q}")
 
-        # Save to database
-        from src.models.food import FoodMacros
-
-        total_macros = FoodMacros(
-            protein=total_protein,
-            carbs=total_carbs,
-            fat=total_fat
-        )
-
-        # Use extracted timestamp from caption if available, otherwise current time
-        entry_timestamp = analysis.timestamp if analysis.timestamp else datetime.now()
-
-        entry = FoodEntry(
+        # Log food entry using FoodService
+        log_result = await food_service.log_food_entry(
             user_id=user_id,
-            timestamp=entry_timestamp,
             photo_path=str(photo_path),
-            foods=verified_foods,  # Use verified data instead of AI estimates
+            foods=verified_foods,
             total_calories=total_calories,
             total_macros=total_macros,
-            meal_type=None,  # Can be inferred from time later
-            notes=update.message.caption or None
+            timestamp=entry_timestamp,
+            notes=caption
         )
 
-        await save_food_entry(entry)
-        logger.info(f"Saved food entry for {user_id}")
+        if not log_result['success']:
+            logger.error(f"Failed to log food entry: {log_result['message']}")
+            await update.message.reply_text("⚠️ Food analyzed but failed to save. Please try again.")
+            return
 
-        # Trigger habit detection for food patterns
-        from src.memory.habit_extractor import habit_extractor
-        try:
-            for food_item in entry.foods:
-                parsed_components = {
-                    "food": food_item.food_name,
-                    "quantity": f"{food_item.quantity} {food_item.unit}",
-                    "preparation": food_item.food_name  # Could be enhanced
-                }
-                await habit_extractor.detect_food_prep_habit(
-                    user_id,
-                    food_item.food_name,
-                    parsed_components
-                )
-        except Exception as e:
-            logger.warning(f"[HABITS] Failed to detect habits: {e}")
-            # Continue - habit detection shouldn't block food logging
+        entry = log_result['entry']
+        logger.info(f"Saved food entry for {user_id}, entry_id: {log_result['entry_id']}")
 
         # Process gamification (XP, streaks, achievements)
         meal_type = entry.meal_type or "snack"  # Default if not set
