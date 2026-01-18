@@ -35,6 +35,20 @@ LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 USDA_API_KEY: str = os.getenv("USDA_API_KEY", "DEMO_KEY")
 ENABLE_NUTRITION_VERIFICATION: bool = os.getenv("ENABLE_NUTRITION_VERIFICATION", "true").lower() == "true"
 
+# Circuit Breaker Configuration
+CIRCUIT_BREAKER_FAILURE_THRESHOLD: int = int(os.getenv("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "5"))
+CIRCUIT_BREAKER_TIMEOUT: int = int(os.getenv("CIRCUIT_BREAKER_TIMEOUT", "60"))
+
+# Retry Configuration
+API_RETRY_MAX: int = int(os.getenv("API_RETRY_MAX", "3"))
+API_RETRY_BASE_DELAY: float = float(os.getenv("API_RETRY_BASE_DELAY", "1.0"))
+
+# Fallback Configuration
+VISION_MODEL_FALLBACK: str = os.getenv("VISION_MODEL_FALLBACK", "anthropic:claude-3-5-sonnet-latest")
+
+# Metrics
+METRICS_PORT: int = int(os.getenv("METRICS_PORT", "8000"))
+
 # Validation
 def validate_config() -> None:
     """Validate required configuration"""

@@ -2,10 +2,19 @@
 import logging
 import base64
 import json
+import time
 from typing import Optional
 from pathlib import Path
 from src.config import VISION_MODEL, OPENAI_API_KEY, ANTHROPIC_API_KEY
 from src.models.food import VisionAnalysisResult, FoodItem, FoodMacros
+from src.resilience.circuit_breaker import (
+    with_circuit_breaker,
+    OPENAI_BREAKER,
+    ANTHROPIC_BREAKER,
+)
+from src.resilience.retry import with_retry
+from src.resilience.fallback import execute_with_fallbacks, FallbackStrategy
+from src.resilience.metrics import record_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +29,15 @@ async def analyze_food_photo(
     food_habits: Optional[str] = None
 ) -> VisionAnalysisResult:
     """
-    Analyze food photo using vision AI with enhanced personalization
+    Analyze food photo using vision AI with enhanced personalization and resilience.
+
+    Uses circuit breaker pattern and fallback strategies to ensure reliable operation
+    even when primary vision API is unavailable.
+
+    Fallback chain:
+    1. Primary vision model (from config)
+    2. Alternative vision model (opposite of primary)
+    3. Mock result (always succeeds)
 
     Args:
         photo_path: Path to the food photo
@@ -42,21 +59,127 @@ async def analyze_food_photo(
     with open(photo_path, "rb") as f:
         image_data = base64.b64encode(f.read()).decode('utf-8')
 
-    # Route to appropriate vision API
+    # Prepare arguments for handlers
+    handler_args = {
+        "image_data": image_data,
+        "photo_path": photo_path,
+        "caption": caption,
+        "visual_patterns": visual_patterns,
+        "semantic_context": semantic_context,
+        "food_history": food_history,
+        "food_habits": food_habits,
+    }
+
+    # Define fallback strategies based on primary model
     if VISION_MODEL.startswith("openai:"):
-        return await analyze_with_openai(
-            image_data, photo_path, caption, visual_patterns,
-            semantic_context, food_history, food_habits
-        )
+        strategies = [
+            FallbackStrategy(
+                name="openai_vision",
+                handler=lambda **kwargs: _analyze_openai_protected(**kwargs),
+                priority=1
+            ),
+            FallbackStrategy(
+                name="anthropic_vision",
+                handler=lambda **kwargs: _analyze_anthropic_protected(**kwargs),
+                priority=2
+            ),
+            FallbackStrategy(
+                name="mock_fallback",
+                handler=lambda **kwargs: _get_mock_result_async(),
+                priority=3
+            )
+        ]
     elif VISION_MODEL.startswith("anthropic:"):
-        return await analyze_with_anthropic(
+        strategies = [
+            FallbackStrategy(
+                name="anthropic_vision",
+                handler=lambda **kwargs: _analyze_anthropic_protected(**kwargs),
+                priority=1
+            ),
+            FallbackStrategy(
+                name="openai_vision",
+                handler=lambda **kwargs: _analyze_openai_protected(**kwargs),
+                priority=2
+            ),
+            FallbackStrategy(
+                name="mock_fallback",
+                handler=lambda **kwargs: _get_mock_result_async(),
+                priority=3
+            )
+        ]
+    else:
+        logger.error(f"Unknown vision model: {VISION_MODEL}, using mock fallback")
+        return _get_mock_result()
+
+    # Execute with fallback strategies
+    return await execute_with_fallbacks(strategies, **handler_args)
+
+
+@with_circuit_breaker(OPENAI_BREAKER)
+@with_retry(max_retries=3)
+async def _analyze_openai_protected(
+    image_data: str,
+    photo_path: str,
+    caption: Optional[str] = None,
+    visual_patterns: Optional[str] = None,
+    semantic_context: Optional[str] = None,
+    food_history: Optional[str] = None,
+    food_habits: Optional[str] = None
+) -> VisionAnalysisResult:
+    """
+    OpenAI vision call protected by circuit breaker and retry logic.
+
+    Wraps analyze_with_openai with resilience patterns and metrics.
+    """
+    start_time = time.time()
+    try:
+        result = await analyze_with_openai(
             image_data, photo_path, caption, visual_patterns,
             semantic_context, food_history, food_habits
         )
-    else:
-        logger.error(f"Unknown vision model: {VISION_MODEL}")
-        # Fallback to mock data
-        return _get_mock_result()
+        duration = time.time() - start_time
+        record_api_call("openai", success=True, duration=duration)
+        return result
+    except Exception as e:
+        duration = time.time() - start_time
+        record_api_call("openai", success=False, duration=duration)
+        raise
+
+
+@with_circuit_breaker(ANTHROPIC_BREAKER)
+@with_retry(max_retries=3)
+async def _analyze_anthropic_protected(
+    image_data: str,
+    photo_path: str,
+    caption: Optional[str] = None,
+    visual_patterns: Optional[str] = None,
+    semantic_context: Optional[str] = None,
+    food_history: Optional[str] = None,
+    food_habits: Optional[str] = None
+) -> VisionAnalysisResult:
+    """
+    Anthropic vision call protected by circuit breaker and retry logic.
+
+    Wraps analyze_with_anthropic with resilience patterns and metrics.
+    """
+    start_time = time.time()
+    try:
+        result = await analyze_with_anthropic(
+            image_data, photo_path, caption, visual_patterns,
+            semantic_context, food_history, food_habits
+        )
+        duration = time.time() - start_time
+        record_api_call("anthropic", success=True, duration=duration)
+        return result
+    except Exception as e:
+        duration = time.time() - start_time
+        record_api_call("anthropic", success=False, duration=duration)
+        raise
+
+
+async def _get_mock_result_async() -> VisionAnalysisResult:
+    """Async wrapper for mock result (always succeeds)"""
+    return _get_mock_result()
 
 
 async def analyze_with_openai(
