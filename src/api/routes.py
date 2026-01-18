@@ -794,6 +794,26 @@ async def health_check(fastapi_request: Request):
     )
 
 
+@router.get("/metrics")
+async def metrics():
+    """
+    Prometheus metrics endpoint.
+
+    Exposes all application metrics in Prometheus text format.
+    This endpoint should be scraped by Prometheus server.
+
+    Returns:
+        Metrics in Prometheus exposition format
+    """
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    from fastapi.responses import Response
+
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST
+    )
+
+
 @router.get("/api/cache/stats")
 async def get_cache_statistics(api_key: str = Depends(verify_api_key)):
     """

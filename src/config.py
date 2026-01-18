@@ -163,6 +163,22 @@ class Settings(BaseSettings):
         description="Prometheus metrics port (1-65535)",
     )
 
+    # OpenTelemetry Tracing
+    enable_tracing: bool = Field(
+        default=True,
+        description="Enable OpenTelemetry distributed tracing (opt-out)",
+    )
+
+    otel_service_name: str = Field(
+        default="health-agent",
+        description="OpenTelemetry service name",
+    )
+
+    otel_exporter_otlp_endpoint: str = Field(
+        default="http://localhost:4318",
+        description="OTLP exporter endpoint (HTTP)",
+    )
+
     # Model Validators (run before field validation)
 
     @model_validator(mode="before")
@@ -327,6 +343,12 @@ SENTRY_ENVIRONMENT = settings.sentry_environment
 SENTRY_TRACES_SAMPLE_RATE = settings.sentry_traces_sample_rate
 ENABLE_PROMETHEUS = settings.enable_prometheus
 PROMETHEUS_PORT = settings.prometheus_port
+
+# Tracing
+ENABLE_TRACING = settings.enable_tracing
+OTEL_SERVICE_NAME = settings.otel_service_name
+OTEL_EXPORTER_OTLP_ENDPOINT = settings.otel_exporter_otlp_endpoint
+
 
 
 def validate_config() -> None:

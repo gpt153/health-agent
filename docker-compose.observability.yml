@@ -1,0 +1,85 @@
+version: '3.8'
+
+# Observability Stack for Health Agent
+#
+# This stack provides:
+# - Prometheus: Metrics collection and storage
+# - Grafana: Visualization and dashboards
+# - Jaeger: Distributed tracing
+#
+# Usage:
+#   docker-compose -f docker-compose.observability.yml up -d
+#
+# Access:
+#   - Grafana: http://localhost:3000 (admin/admin)
+#   - Prometheus: http://localhost:9090
+#   - Jaeger UI: http://localhost:16686
+
+services:
+  # Prometheus - Metrics collection
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: health-agent-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    networks:
+      - health-agent-network
+    restart: unless-stopped
+
+  # Grafana - Visualization and dashboards
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: health-agent-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - health-agent-network
+    restart: unless-stopped
+
+  # Jaeger - Distributed tracing (all-in-one for development)
+  jaeger:
+    image: jaegertracing/all-in-one:1.52
+    container_name: health-agent-jaeger
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4318:4318"    # OTLP HTTP receiver
+      - "4317:4317"    # OTLP gRPC receiver
+      - "14268:14268"  # Jaeger collector
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - SPAN_STORAGE_TYPE=memory
+    networks:
+      - health-agent-network
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  health-agent-network:
+    name: health-agent-network
+    driver: bridge
