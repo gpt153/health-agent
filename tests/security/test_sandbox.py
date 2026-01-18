@@ -325,7 +325,8 @@ async def bypass_attempt(ctx):
         with pytest.raises(SandboxViolation):
             executor.execute_sandboxed(code, namespace)
 
-    def test_resource_exhaustion_memory(self, executor):
+    @pytest.mark.asyncio
+    async def test_resource_exhaustion_memory(self, executor):
         """Test that memory bombs are caught"""
         code = """
 async def memory_bomb(ctx):
