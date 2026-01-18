@@ -12,7 +12,7 @@ from src.db.queries import (
     get_user_subscription_status
 )
 from src.models.onboarding import ONBOARDING_PATHS, TRACKABLE_FEATURES
-from src.memory.file_manager import memory_manager
+from src.memory.db_manager import db_memory_manager as memory_manager
 from src.utils.auth import is_authorized
 
 logger = logging.getLogger(__name__)

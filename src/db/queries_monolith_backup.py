@@ -3268,3 +3268,291 @@ async def audit_preference_update(
             )
             await conn.commit()
     logger.info(f"Audited preference update for user {user_id}: {preference_name}")
+
+
+# User Profile Operations (PostgreSQL-based memory)
+async def get_user_profile(telegram_id: str) -> Optional[dict]:
+    """
+    Get user profile from database
+
+    Args:
+        telegram_id: User's Telegram ID
+
+    Returns:
+        Dict containing profile_data and timezone, or None if not found
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT profile_data, timezone
+                FROM user_profiles
+                WHERE telegram_id = %s
+                """,
+                (telegram_id,)
+            )
+            row = await cur.fetchone()
+            if row:
+                return {
+                    "profile_data": row[0],
+                    "timezone": row[1]
+                }
+            return None
+
+
+async def update_user_profile(
+    telegram_id: str,
+    profile_data: dict,
+    timezone: Optional[str] = None
+) -> None:
+    """
+    Update user profile in database
+
+    Args:
+        telegram_id: User's Telegram ID
+        profile_data: Complete profile data dict
+        timezone: Optional timezone to update
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            if timezone:
+                await cur.execute(
+                    """
+                    UPDATE user_profiles
+                    SET profile_data = %s, timezone = %s
+                    WHERE telegram_id = %s
+                    """,
+                    (json.dumps(profile_data), timezone, telegram_id)
+                )
+            else:
+                await cur.execute(
+                    """
+                    UPDATE user_profiles
+                    SET profile_data = %s
+                    WHERE telegram_id = %s
+                    """,
+                    (json.dumps(profile_data), telegram_id)
+                )
+            await conn.commit()
+    logger.info(f"Updated profile for user {telegram_id}")
+
+
+async def get_user_profile_field(telegram_id: str, field_path: str) -> Optional[any]:
+    """
+    Get a specific field from user profile using JSON path
+
+    Args:
+        telegram_id: User's Telegram ID
+        field_path: JSON path to field (e.g., 'name', 'communication_preferences.brevity')
+
+    Returns:
+        Field value or None if not found
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Handle nested paths (e.g., 'communication_preferences.brevity')
+            if '.' in field_path:
+                parts = field_path.split('.')
+                json_path = '->' + '->'.join(f"'{p}'" for p in parts[:-1]) + f"->>'{parts[-1]}'"
+                query = f"SELECT profile_data{json_path} FROM user_profiles WHERE telegram_id = %s"
+            else:
+                query = f"SELECT profile_data->>%s FROM user_profiles WHERE telegram_id = %s"
+
+            if '.' in field_path:
+                await cur.execute(query, (telegram_id,))
+            else:
+                await cur.execute(query, (field_path, telegram_id))
+
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+
+async def set_user_profile_field(
+    telegram_id: str,
+    field_path: str,
+    value: any,
+    updated_by: str = "user"
+) -> None:
+    """
+    Set a specific field in user profile with audit logging
+
+    Args:
+        telegram_id: User's Telegram ID
+        field_path: JSON path to field (e.g., 'name', 'communication_preferences.brevity')
+        value: Value to set
+        updated_by: Source of update ('user' or 'auto')
+    """
+    # Get old value for audit
+    old_value = await get_user_profile_field(telegram_id, field_path)
+
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            # Handle nested paths
+            if '.' in field_path:
+                # For nested paths, we need to use jsonb_set
+                parts = field_path.split('.')
+                json_path = '{' + ','.join(parts) + '}'
+                await cur.execute(
+                    """
+                    UPDATE user_profiles
+                    SET profile_data = jsonb_set(
+                        profile_data,
+                        %s::text[],
+                        to_jsonb(%s::text),
+                        true
+                    )
+                    WHERE telegram_id = %s
+                    """,
+                    (json_path, str(value), telegram_id)
+                )
+            else:
+                await cur.execute(
+                    """
+                    UPDATE user_profiles
+                    SET profile_data = jsonb_set(
+                        profile_data,
+                        %s::text[],
+                        to_jsonb(%s::text),
+                        true
+                    )
+                    WHERE telegram_id = %s
+                    """,
+                    ([field_path], str(value), telegram_id)
+                )
+            await conn.commit()
+
+    # Audit the change
+    await audit_profile_update(telegram_id, field_path, str(old_value) if old_value else None, str(value), updated_by)
+    logger.info(f"Updated profile field {field_path} for user {telegram_id}")
+
+
+async def get_user_preferences(telegram_id: str) -> dict:
+    """
+    Get user communication preferences from profile
+
+    Args:
+        telegram_id: User's Telegram ID
+
+    Returns:
+        Dict of communication preferences
+    """
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT profile_data->'communication_preferences'
+                FROM user_profiles
+                WHERE telegram_id = %s
+                """,
+                (telegram_id,)
+            )
+            row = await cur.fetchone()
+            return row[0] if row and row[0] else {}
+
+
+async def update_user_preference(
+    telegram_id: str,
+    pref_name: str,
+    value: any,
+    updated_by: str = "user"
+) -> None:
+    """
+    Update a specific user preference with audit logging
+
+    Args:
+        telegram_id: User's Telegram ID
+        pref_name: Preference name (e.g., 'brevity', 'tone')
+        value: Value to set
+        updated_by: Source of update ('user' or 'auto')
+    """
+    # Get old value for audit
+    old_value = await get_user_profile_field(telegram_id, f'communication_preferences.{pref_name}')
+
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE user_profiles
+                SET profile_data = jsonb_set(
+                    profile_data,
+                    %s::text[],
+                    to_jsonb(%s::text),
+                    true
+                )
+                WHERE telegram_id = %s
+                """,
+                (['communication_preferences', pref_name], str(value), telegram_id)
+            )
+            await conn.commit()
+
+    # Audit the change
+    await audit_preference_update(telegram_id, pref_name, str(old_value) if old_value else None, str(value), updated_by)
+    logger.info(f"Updated preference {pref_name} for user {telegram_id}")
+
+
+async def create_user_profile(telegram_id: str, timezone: str = "UTC") -> None:
+    """
+    Create a new user profile with default values
+
+    Args:
+        telegram_id: User's Telegram ID
+        timezone: User's timezone (default UTC)
+    """
+    default_profile = {
+        "communication_preferences": {
+            "brevity": "medium",
+            "tone": "friendly",
+            "use_humor": True,
+            "proactive_checkins": False,
+            "daily_summary": False
+        }
+    }
+
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO user_profiles (telegram_id, profile_data, timezone)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (telegram_id) DO NOTHING
+                """,
+                (telegram_id, json.dumps(default_profile), timezone)
+            )
+            await conn.commit()
+    logger.info(f"Created profile for user {telegram_id}")
+
+
+async def migrate_profile_from_dict(
+    telegram_id: str,
+    profile_dict: dict,
+    preferences_dict: dict,
+    timezone: str = "UTC"
+) -> None:
+    """
+    Migrate user profile from markdown format to database
+
+    Args:
+        telegram_id: User's Telegram ID
+        profile_dict: Profile data from markdown parsing
+        preferences_dict: Preferences from markdown parsing
+        timezone: User's timezone
+    """
+    # Merge profile and preferences
+    combined_profile = {**profile_dict}
+    if preferences_dict:
+        combined_profile['communication_preferences'] = preferences_dict
+
+    async with db.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO user_profiles (telegram_id, profile_data, timezone)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (telegram_id) DO UPDATE
+                SET profile_data = EXCLUDED.profile_data,
+                    timezone = EXCLUDED.timezone
+                """,
+                (telegram_id, json.dumps(combined_profile), timezone)
+            )
+            await conn.commit()
+    logger.info(f"Migrated profile for user {telegram_id} from markdown to database")

@@ -16,7 +16,7 @@ async def retrieve_user_context(
     Retrieve all user context in parallel for optimal performance
 
     Parallelizes:
-    - Load memory files (~50ms)
+    - Load memory from database (~50ms)
     - Mem0 semantic search (~200-300ms)
 
     Target: <250ms total (limited by slowest operation)
@@ -24,11 +24,11 @@ async def retrieve_user_context(
     Args:
         user_id: User's Telegram ID
         query: Current user query for semantic search
-        memory_manager: MemoryManager instance
+        memory_manager: MemoryManager instance (supports both DatabaseMemoryManager and legacy MemoryFileManager)
 
     Returns:
         {
-            'memory': {...},  # Profile, preferences, patterns
+            'memory': {...},  # Profile, preferences from PostgreSQL
             'memories': [...],  # Mem0 search results
         }
     """

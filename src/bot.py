@@ -19,7 +19,7 @@ from src.db.queries import (
     get_tool_by_name,
     get_pending_approvals,
 )
-from src.memory.file_manager import memory_manager
+from src.memory.db_manager import db_memory_manager as memory_manager
 from src.memory.mem0_manager import mem0_manager
 from src.agent import get_agent_response
 from src.agent.dynamic_tools import tool_manager
@@ -261,9 +261,15 @@ IMPORTANT:
                 info = extraction.get("information", "")
 
                 if info:
-                    # Save directly to memory
-                    await memory_manager.save_observation(user_id, category, info)
-                    logger.info(f"[AUTO-SAVE] Saved to '{category}': {info[:50]}...")
+                    # Save directly to Mem0 (replaces save_observation)
+                    from src.memory.mem0_manager import mem0_manager
+                    mem0_manager.add_message(
+                        user_id,
+                        info,
+                        role="user",
+                        metadata={"type": "auto_extracted", "category": category}
+                    )
+                    logger.info(f"[AUTO-SAVE] Saved to Mem0 '{category}': {info[:50]}...")
 
     except Exception as e:
         logger.error(f"Auto-save failed: {e}", exc_info=True)

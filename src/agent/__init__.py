@@ -27,6 +27,7 @@ from src.db.queries import (
     generate_adaptive_suggestions,
 )
 from src.memory.file_manager import MemoryFileManager
+from src.memory.db_manager import DatabaseMemoryManager
 from src.memory.system_prompt import generate_system_prompt
 from src.utils.datetime_helpers import now_utc, today_user_timezone
 from src.agent.dynamic_tools import (
@@ -55,10 +56,10 @@ class AgentDeps:
     """Dependencies for agent tools"""
 
     telegram_id: str
-    memory_manager: MemoryFileManager
-    user_memory: Dict[str, str]  # Loaded from markdown files
+    memory_manager: MemoryFileManager | DatabaseMemoryManager  # Supports both file and database-based memory
+    user_memory: Dict[str, str]  # Loaded from PostgreSQL or markdown files
     reminder_manager: Optional[Any] = None  # ReminderManager instance (optional)
-    bot_application: object = None  # Telegram bot application for notifications (optional)
+    bot_application: Optional[Any] = None  # Telegram bot application for notifications (optional)
 
 
 # Tool response models
@@ -1907,12 +1908,7 @@ async def remember_fact(
     deps: AgentDeps = ctx.deps
 
     try:
-        # Save to patterns file (long-term memory)
-        await deps.memory_manager.save_observation(
-            deps.telegram_id, category, fact
-        )
-
-        # Also save to Mem0 for semantic retrieval
+        # Save to Mem0 for semantic retrieval (replaces patterns.md)
         from src.memory.mem0_manager import mem0_manager
         mem0_manager.add_message(
             deps.telegram_id,
@@ -1922,7 +1918,7 @@ async def remember_fact(
         )
 
         logger.info(
-            f"[REMEMBER_FACT] Saved to patterns.md and Mem0: '{fact}' in category '{category}'"
+            f"[REMEMBER_FACT] Saved to Mem0: '{fact}' in category '{category}'"
         )
 
         return RememberFactResult(
@@ -1972,12 +1968,16 @@ async def save_user_info(
     deps: AgentDeps = ctx.deps
 
     try:
-        # Save to patterns file
-        await deps.memory_manager.save_observation(
-            deps.telegram_id, category, information
+        # Save to Mem0 for semantic retrieval (replaces patterns.md)
+        from src.memory.mem0_manager import mem0_manager
+        mem0_manager.add_message(
+            deps.telegram_id,
+            information,
+            role="user",
+            metadata={"type": "user_info", "category": category}
         )
 
-        logger.info(f"Saved user info to '{category}' for {deps.telegram_id}")
+        logger.info(f"Saved user info to Mem0 '{category}' for {deps.telegram_id}")
 
         return UserInfoResult(
             success=True,
@@ -2046,9 +2046,9 @@ async def add_new_user(
         await create_user(user_id)
         logger.info(f"Created user {user_id} in database")
 
-        # 2. Create user files
-        await deps.memory_manager.create_user_files(user_id)
-        logger.info(f"Created user files for {user_id}")
+        # 2. Create user profile in database (replaces create_user_files)
+        await deps.memory_manager.create_user_profile(user_id)
+        logger.info(f"Created user profile for {user_id}")
 
         # 3. Update .env file with new user ID
         env_path = Path(".env")
@@ -2317,12 +2317,16 @@ async def remember_visual_pattern(
     deps: AgentDeps = ctx.deps
 
     try:
-        # Save visual pattern to user's memory
-        await deps.memory_manager.add_visual_pattern(
-            deps.telegram_id, item_name, description
+        # Save visual pattern to Mem0 for semantic retrieval (replaces visual_patterns.md)
+        from src.memory.mem0_manager import mem0_manager
+        mem0_manager.add_message(
+            deps.telegram_id,
+            f"{item_name}: {description}",
+            role="user",
+            metadata={"type": "visual_pattern", "item_name": item_name}
         )
 
-        logger.info(f"Saved visual pattern for {deps.telegram_id}: {item_name}")
+        logger.info(f"Saved visual pattern to Mem0 for {deps.telegram_id}: {item_name}")
 
         return VisualPatternResult(
             success=True,
