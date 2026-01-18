@@ -17,7 +17,8 @@ async def analyze_food_photo(
     visual_patterns: Optional[str] = None,
     semantic_context: Optional[str] = None,
     food_history: Optional[str] = None,
-    food_habits: Optional[str] = None
+    food_habits: Optional[str] = None,
+    portion_comparison_context: Optional[str] = None
 ) -> VisionAnalysisResult:
     """
     Analyze food photo using vision AI with enhanced personalization
@@ -30,6 +31,7 @@ async def analyze_food_photo(
         semantic_context: Relevant memories from Mem0 semantic search
         food_history: Recent food logging patterns
         food_habits: User's established food preparation habits
+        portion_comparison_context: Portion comparison context from Phase 4 (Epic 009)
 
     Returns:
         VisionAnalysisResult with identified foods
@@ -46,12 +48,14 @@ async def analyze_food_photo(
     if VISION_MODEL.startswith("openai:"):
         return await analyze_with_openai(
             image_data, photo_path, caption, visual_patterns,
-            semantic_context, food_history, food_habits
+            semantic_context, food_history, food_habits,
+            portion_comparison_context
         )
     elif VISION_MODEL.startswith("anthropic:"):
         return await analyze_with_anthropic(
             image_data, photo_path, caption, visual_patterns,
-            semantic_context, food_history, food_habits
+            semantic_context, food_history, food_habits,
+            portion_comparison_context
         )
     else:
         logger.error(f"Unknown vision model: {VISION_MODEL}")
@@ -66,7 +70,8 @@ async def analyze_with_openai(
     visual_patterns: Optional[str] = None,
     semantic_context: Optional[str] = None,
     food_history: Optional[str] = None,
-    food_habits: Optional[str] = None
+    food_habits: Optional[str] = None,
+    portion_comparison_context: Optional[str] = None
 ) -> VisionAnalysisResult:
     """Use OpenAI Vision API (GPT-4o-mini)"""
     try:
@@ -142,6 +147,10 @@ Be specific about portion sizes and provide nutritional estimates."""
 
         if food_habits:
             prompt_text += f"\n{food_habits}\nAuto-apply these habits when recognizing matching foods."
+
+        # Add portion comparison context (Phase 4 - Epic 009)
+        if portion_comparison_context:
+            prompt_text += f"\n\n{portion_comparison_context}\nAdjust your calorie and macro estimates based on these portion differences."
 
         # Prepare vision prompt
         response = await client.chat.completions.create(
@@ -223,7 +232,8 @@ async def analyze_with_anthropic(
     visual_patterns: Optional[str] = None,
     semantic_context: Optional[str] = None,
     food_history: Optional[str] = None,
-    food_habits: Optional[str] = None
+    food_habits: Optional[str] = None,
+    portion_comparison_context: Optional[str] = None
 ) -> VisionAnalysisResult:
     """Use Anthropic Claude 3.5 Sonnet Vision"""
     try:
@@ -299,6 +309,10 @@ Be specific about portion sizes and provide nutritional estimates."""
 
         if food_habits:
             prompt_text += f"\n{food_habits}\nAuto-apply these habits when recognizing matching foods."
+
+        # Add portion comparison context (Phase 4 - Epic 009)
+        if portion_comparison_context:
+            prompt_text += f"\n\n{portion_comparison_context}\nAdjust your calorie and macro estimates based on these portion differences."
 
         # Prepare vision prompt
         response = await client.messages.create(

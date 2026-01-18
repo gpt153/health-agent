@@ -2,7 +2,7 @@
 import logging
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from uuid import uuid4
 from datetime import datetime
 
@@ -10,9 +10,9 @@ from pydantic_ai import Agent, ModelMessagesTypeAdapter, RunContext
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart
 from pydantic import BaseModel, Field
 
-from src.config import AGENT_MODEL
+from src.config import AGENT_MODEL, ENABLE_SENTRY, ENABLE_PROMETHEUS
 from src.models.user import UserPreferences
-from src.models.tracking import TrackingCategory, TrackingEntry, TrackingField, TrackingSchedule
+from src.models.tracking import TrackingCategory, TrackerEntry, TrackingField, TrackingSchedule
 from src.db.queries import (
     create_tracking_category,
     save_tracking_entry,
@@ -27,6 +27,7 @@ from src.db.queries import (
     generate_adaptive_suggestions,
 )
 from src.memory.file_manager import MemoryFileManager
+from src.memory.db_manager import DatabaseMemoryManager
 from src.memory.system_prompt import generate_system_prompt
 from src.utils.datetime_helpers import now_utc, today_user_timezone
 from src.agent.dynamic_tools import (
@@ -35,6 +36,16 @@ from src.agent.dynamic_tools import (
     tool_manager,
     CodeValidationError
 )
+# TODO: Re-enable when analytics functions are implemented (Epic 006 Phase 4)
+# from src.agent.tracker_tools import (
+#     get_user_trackers,
+#     query_tracker_data,
+#     get_tracker_statistics,
+#     find_tracker_low_values,
+#     get_tracker_value_distribution,
+#     get_recent_tracker_data,
+#     TrackerQueryResult
+# )
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +56,10 @@ class AgentDeps:
     """Dependencies for agent tools"""
 
     telegram_id: str
-    memory_manager: MemoryFileManager
-    user_memory: dict  # Loaded from markdown files
-    reminder_manager: object = None  # ReminderManager instance (optional)
-    bot_application: object = None  # Telegram bot application for notifications (optional)
+    memory_manager: MemoryFileManager | DatabaseMemoryManager  # Supports both file and database-based memory
+    user_memory: Dict[str, str]  # Loaded from PostgreSQL or markdown files
+    reminder_manager: Optional[Any] = None  # ReminderManager instance (optional)
+    bot_application: Optional[Any] = None  # Telegram bot application for notifications (optional)
 
 
 # Tool response models
@@ -240,12 +251,24 @@ class DynamicToolCreationResult(BaseModel):
     approval_id: Optional[str] = None
 
 
+# Import memory tools (Epic 009 - Phase 7)
+from src.agent.tools.memory_tools import (
+    search_food_images,
+    get_food_formula,
+    get_health_patterns,
+)
+
 # Initialize agent with model from config
 agent = Agent(
     model=AGENT_MODEL,
     system_prompt="",  # Will be dynamically set per conversation
     deps_type=AgentDeps,
 )
+
+# Register memory tools (Epic 009 - Phase 7)
+agent.tool(search_food_images)
+agent.tool(get_food_formula)
+agent.tool(get_health_patterns)
 
 
 @agent.tool
@@ -458,7 +481,7 @@ async def log_tracking_entry(
             )
 
         # Create tracking entry with UTC timestamp
-        entry = TrackingEntry(
+        entry = TrackerEntry(
             id=str(uuid4()),
             user_id=deps.telegram_id,
             category_id=category["id"],
@@ -489,6 +512,143 @@ async def log_tracking_entry(
             category=category_name,
             data=data,
         )
+
+
+# Epic 006: Advanced Tracker Query Tools
+# TODO: Re-enable when analytics functions are implemented
+# @agent.tool
+# async def get_trackers(ctx) -> TrackerQueryResult:
+#     """
+#     Get all active custom trackers the user has created.
+#     Use this first to discover what tracking data is available.
+#
+#     Returns:
+#         TrackerQueryResult with list of trackers and their field schemas
+#     """
+#     return await get_user_trackers(ctx)
+#
+#
+# @agent.tool
+# async def query_tracker(
+#     ctx,
+#     tracker_name: str,
+#     field_name: str,
+#     operator: str,
+#     value: Any,
+#     days_back: int = 30
+# ) -> TrackerQueryResult:
+#     """
+#     Query custom tracker entries by field value.
+#
+#     Use this to find specific tracker data based on conditions.
+#     For example: find all days where energy < 5, or days with heavy period flow.
+#
+#     Args:
+#         tracker_name: Name of the tracker (e.g., "Energy", "Period", "Mood")
+#         field_name: Field to query (e.g., "level", "flow", "mood_rating")
+#         operator: Comparison operator: '=', '>', '<', '>=', '<='
+#         value: Value to compare against
+#         days_back: How many days to look back (default: 30)
+#
+#     Returns:
+#         TrackerQueryResult with matching entries
+#     """
+#     return await query_tracker_data(ctx, tracker_name, field_name, operator, value, days_back)
+#
+#
+# @agent.tool
+# async def get_tracker_stats(
+#     ctx,
+#     tracker_name: str,
+#     field_name: str,
+#     days_back: int = 30
+# ) -> TrackerQueryResult:
+#     """
+#     Get statistics for a tracker field (average, min, max, count).
+#
+#     Use this to understand overall trends. For example:
+#     - Average energy level over past week
+#     - Sleep quality stats for past month
+#
+#     Args:
+#         tracker_name: Name of the tracker
+#         field_name: Field to analyze
+#         days_back: Number of days to analyze (default: 30)
+#
+#     Returns:
+#         TrackerQueryResult with statistics
+#     """
+#     return await get_tracker_statistics(ctx, tracker_name, field_name, days_back)
+#
+#
+# @agent.tool
+# async def find_low_tracker_days(
+#     ctx,
+#     tracker_name: str,
+#     field_name: str,
+#     threshold: float,
+#     days_back: int = 30
+# ) -> TrackerQueryResult:
+#     """
+#     Find days where a tracker value was below a threshold.
+#
+#     Use this to identify concerning patterns like low energy, poor sleep, low mood.
+#
+#     Args:
+#         tracker_name: Name of the tracker
+#         field_name: Field to analyze
+#         threshold: Threshold value (finds values BELOW this)
+#         days_back: Number of days to look back (default: 30)
+#
+#     Returns:
+#         TrackerQueryResult with pattern days
+#     """
+#     return await find_tracker_low_values(ctx, tracker_name, field_name, threshold, days_back)
+#
+#
+# @agent.tool
+# async def get_tracker_distribution(
+#     ctx,
+#     tracker_name: str,
+#     field_name: str,
+#     days_back: int = 30
+# ) -> TrackerQueryResult:
+#     """
+#     Get distribution of values for a field.
+#
+#     Useful for categorical data like symptoms, exercise types, moods.
+#     Shows which values appear most frequently.
+#
+#     Args:
+#         tracker_name: Name of the tracker
+#         field_name: Field to analyze
+#         days_back: Number of days to analyze (default: 30)
+#
+#     Returns:
+#         TrackerQueryResult with value distribution
+#     """
+#     return await get_tracker_value_distribution(ctx, tracker_name, field_name, days_back)
+#
+#
+# @agent.tool
+# async def get_recent_tracker(
+#     ctx,
+#     tracker_name: str,
+#     limit: int = 7
+# ) -> TrackerQueryResult:
+#     """
+#     Get most recent entries for a tracker.
+#
+#     Use this to show user their recent tracking history.
+#
+#     Args:
+#         tracker_name: Name of the tracker
+#         limit: Number of recent entries to retrieve (default: 7)
+#
+#     Returns:
+#         TrackerQueryResult with recent entries
+#     """
+#     return await get_recent_tracker_data(ctx, tracker_name, limit)
 
 
 @agent.tool
@@ -1275,6 +1435,13 @@ async def get_daily_food_summary(
     """
     Get summary of food intake for a specific date (calories and macros)
 
+    IMPORTANT: When presenting results to user, ALWAYS show ALL macros:
+    - Total calories
+    - Protein (g)
+    - Carbs (g)
+    - Fat (g)
+    Never show just protein alone - always include carbs and fat too.
+
     Args:
         date: Date in "YYYY-MM-DD" format (defaults to today)
 
@@ -1597,6 +1764,23 @@ async def log_food_from_text_validated(
         await save_food_entry(entry)
         logger.info(f"Saved validated text food entry for {deps.telegram_id}")
 
+        # Process gamification (XP, streaks, achievements)
+        gamification_msg = ""
+        try:
+            from src.gamification.integrations import handle_food_entry_gamification
+            meal_type_for_gamification = meal_type or "snack"
+            gamification_result = await handle_food_entry_gamification(
+                user_id=deps.telegram_id,
+                food_entry_id=entry.id,
+                logged_at=entry.timestamp,
+                meal_type=meal_type_for_gamification
+            )
+            if gamification_result.get('message'):
+                gamification_msg = f"\n\n🎯 **PROGRESS**\n{gamification_result['message']}"
+        except Exception as e:
+            logger.warning(f"[GAMIFICATION] Failed to process gamification: {e}")
+            # Continue - gamification shouldn't block food logging
+
         # Trigger habit detection for food patterns
         from src.memory.habit_extractor import habit_extractor
         try:
@@ -1667,6 +1851,10 @@ async def log_food_from_text_validated(
 
         message = "\n".join(message_parts)
 
+        # Append gamification message if available
+        if gamification_msg:
+            message += gamification_msg
+
         return FoodEntryValidatedResult(
             success=True,
             message=message,
@@ -1720,12 +1908,7 @@ async def remember_fact(
     deps: AgentDeps = ctx.deps
 
     try:
-        # Save to patterns file (long-term memory)
-        await deps.memory_manager.save_observation(
-            deps.telegram_id, category, fact
-        )
-
-        # Also save to Mem0 for semantic retrieval
+        # Save to Mem0 for semantic retrieval (replaces patterns.md)
         from src.memory.mem0_manager import mem0_manager
         mem0_manager.add_message(
             deps.telegram_id,
@@ -1735,7 +1918,7 @@ async def remember_fact(
         )
 
         logger.info(
-            f"[REMEMBER_FACT] Saved to patterns.md and Mem0: '{fact}' in category '{category}'"
+            f"[REMEMBER_FACT] Saved to Mem0: '{fact}' in category '{category}'"
         )
 
         return RememberFactResult(
@@ -1785,12 +1968,16 @@ async def save_user_info(
     deps: AgentDeps = ctx.deps
 
     try:
-        # Save to patterns file
-        await deps.memory_manager.save_observation(
-            deps.telegram_id, category, information
+        # Save to Mem0 for semantic retrieval (replaces patterns.md)
+        from src.memory.mem0_manager import mem0_manager
+        mem0_manager.add_message(
+            deps.telegram_id,
+            information,
+            role="user",
+            metadata={"type": "user_info", "category": category}
         )
 
-        logger.info(f"Saved user info to '{category}' for {deps.telegram_id}")
+        logger.info(f"Saved user info to Mem0 '{category}' for {deps.telegram_id}")
 
         return UserInfoResult(
             success=True,
@@ -1859,9 +2046,9 @@ async def add_new_user(
         await create_user(user_id)
         logger.info(f"Created user {user_id} in database")
 
-        # 2. Create user files
-        await deps.memory_manager.create_user_files(user_id)
-        logger.info(f"Created user files for {user_id}")
+        # 2. Create user profile in database (replaces create_user_files)
+        await deps.memory_manager.create_user_profile(user_id)
+        logger.info(f"Created user profile for {user_id}")
 
         # 3. Update .env file with new user ID
         env_path = Path(".env")
@@ -2130,12 +2317,16 @@ async def remember_visual_pattern(
     deps: AgentDeps = ctx.deps
 
     try:
-        # Save visual pattern to user's memory
-        await deps.memory_manager.add_visual_pattern(
-            deps.telegram_id, item_name, description
+        # Save visual pattern to Mem0 for semantic retrieval (replaces visual_patterns.md)
+        from src.memory.mem0_manager import mem0_manager
+        mem0_manager.add_message(
+            deps.telegram_id,
+            f"{item_name}: {description}",
+            role="user",
+            metadata={"type": "visual_pattern", "item_name": item_name}
         )
 
-        logger.info(f"Saved visual pattern for {deps.telegram_id}: {item_name}")
+        logger.info(f"Saved visual pattern to Mem0 for {deps.telegram_id}: {item_name}")
 
         return VisualPatternResult(
             success=True,
@@ -2626,9 +2817,9 @@ async def get_agent_response(
     telegram_id: str,
     user_message: str,
     memory_manager: MemoryFileManager,
-    reminder_manager=None,
-    message_history: list = None,
-    bot_application=None,
+    reminder_manager: Optional[Any] = None,
+    message_history: Optional[List[Dict[str, Any]]] = None,
+    bot_application: Optional[Any] = None,
     model_override: Optional[str] = None,
 ) -> str:
     """
@@ -2678,7 +2869,8 @@ async def get_agent_response(
 
     try:
         user_tz = pytz.timezone(user_timezone_str)
-    except:
+    except pytz.exceptions.UnknownTimeZoneError as e:
+        logger.warning(f"Invalid timezone '{user_timezone_str}' in user profile, falling back to Europe/Stockholm: {e}")
         user_tz = pytz.timezone('Europe/Stockholm')
 
     # Get current time in user's timezone
@@ -2734,6 +2926,11 @@ async def get_agent_response(
                         model_name="assistant"
                     )
                 )
+
+    # Set user context for monitoring
+    if ENABLE_SENTRY:
+        from src.monitoring import set_user_context
+        set_user_context(telegram_id)
 
     # Determine which model to use
     selected_model = model_override if model_override else AGENT_MODEL
@@ -2796,13 +2993,42 @@ async def get_agent_response(
         tool_manager.register_tools_on_agent(dynamic_agent)
 
         # Run agent with message history for context (converted to ModelMessage objects)
-        result = await dynamic_agent.run(
-            enhanced_message, deps=deps, message_history=converted_history
-        )
+        # Track agent call timing for Prometheus
+        if ENABLE_PROMETHEUS:
+            import time
+            from src.monitoring.prometheus_metrics import metrics
+            agent_type = "claude" if "claude" in selected_model.lower() else "gpt4"
+            start_time = time.time()
 
-        return result.output
+            try:
+                result = await dynamic_agent.run(
+                    enhanced_message, deps=deps, message_history=converted_history
+                )
+
+                # Record success
+                duration = time.time() - start_time
+                metrics.agent_call_duration_seconds.labels(agent_type=agent_type).observe(duration)
+                metrics.agent_calls_total.labels(agent_type=agent_type, status="success").inc()
+
+                return result.output
+            except Exception as e:
+                # Record failure
+                duration = time.time() - start_time
+                metrics.agent_call_duration_seconds.labels(agent_type=agent_type).observe(duration)
+                metrics.agent_calls_total.labels(agent_type=agent_type, status="error").inc()
+                raise
+        else:
+            result = await dynamic_agent.run(
+                enhanced_message, deps=deps, message_history=converted_history
+            )
+            return result.output
 
     except Exception as primary_error:
+        # Capture exception in Sentry
+        if ENABLE_SENTRY:
+            from src.monitoring import capture_exception
+            capture_exception(primary_error, model=selected_model)
+
         # Check if it's an API overload/availability error
         error_str = str(primary_error).lower()
         if any(keyword in error_str for keyword in ['overload', '529', '503', 'rate_limit', 'unavailable']):

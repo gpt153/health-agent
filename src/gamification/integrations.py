@@ -15,7 +15,7 @@ Usage:
 
 import logging
 from datetime import datetime, date
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TypedDict, Any
 
 from src.gamification import (
     award_xp,
@@ -30,12 +30,24 @@ from src.gamification.motivation_profiles import (
 logger = logging.getLogger(__name__)
 
 
+# TypedDict for gamification results
+class GamificationResult(TypedDict):
+    """Result of gamification processing"""
+    xp_awarded: int
+    level_up: bool
+    new_level: int
+    streak_updated: bool
+    current_streak: int
+    achievements_unlocked: List[Dict[str, Any]]
+    message: str
+
+
 async def handle_reminder_completion_gamification(
     user_id: str,
     reminder_id: str,
     completed_at: datetime,
     scheduled_time: str
-) -> Dict:
+) -> GamificationResult:
     """
     Handle gamification for reminder completion
 
@@ -56,6 +68,8 @@ async def handle_reminder_completion_gamification(
             'message': str  # User-facing message
         }
     """
+    logger.info(f"[GAMIFICATION] handle_reminder_completion_gamification called: user={user_id}, reminder={reminder_id}")
+
     try:
         result = {
             'xp_awarded': 0,
@@ -238,8 +252,8 @@ async def handle_reminder_completion_gamification(
         return result
 
     except Exception as e:
-        logger.error(f"Error in reminder completion gamification: {e}", exc_info=True)
-        # Return minimal result on error
+        logger.error(f"[GAMIFICATION] ERROR in reminder completion gamification: {type(e).__name__}: {e}", exc_info=True)
+        # Return minimal result with user notification
         return {
             'xp_awarded': 0,
             'level_up': False,
@@ -247,7 +261,7 @@ async def handle_reminder_completion_gamification(
             'streak_updated': False,
             'current_streak': 0,
             'achievements_unlocked': [],
-            'message': ''
+            'message': '⚠️ Gamification temporarily unavailable. Your completion was recorded!'
         }
 
 
@@ -256,7 +270,7 @@ async def handle_food_entry_gamification(
     food_entry_id: str,
     logged_at: datetime,
     meal_type: str
-) -> Dict:
+) -> GamificationResult:
     """
     Handle gamification for food logging
 
@@ -269,6 +283,9 @@ async def handle_food_entry_gamification(
     Returns:
         Gamification result dict
     """
+    # DEBUG logging to expose silent failures (Issue #121)
+    logger.info(f"[GAMIFICATION] handle_food_entry_gamification called: user={user_id}, meal={meal_type}")
+
     try:
         result = {
             'xp_awarded': 0,
@@ -282,6 +299,7 @@ async def handle_food_entry_gamification(
 
         # Award XP for food logging
         base_xp = 5
+        logger.info(f"[GAMIFICATION] Awarding {base_xp} XP to user {user_id}")
         xp_result = await award_xp(
             user_id=user_id,
             amount=base_xp,
@@ -289,17 +307,20 @@ async def handle_food_entry_gamification(
             source_id=food_entry_id,
             reason=f"Logged {meal_type}"
         )
+        logger.info(f"[GAMIFICATION] XP award successful: {xp_result}")
 
         result['xp_awarded'] = xp_result['xp_awarded']
         result['level_up'] = xp_result['leveled_up']
         result['new_level'] = xp_result['new_level']
 
         # Update nutrition streak
+        logger.info(f"[GAMIFICATION] Updating nutrition streak for user {user_id}")
         streak_result = await update_streak(
             user_id=user_id,
             streak_type="nutrition",
             activity_date=logged_at.date()
         )
+        logger.info(f"[GAMIFICATION] Streak update successful: current={streak_result['current_streak']}")
 
         result['streak_updated'] = True
         result['current_streak'] = streak_result['current_streak']
@@ -317,6 +338,7 @@ async def handle_food_entry_gamification(
                 result['xp_awarded'] += milestone_xp
 
         # Check achievements
+        logger.info(f"[GAMIFICATION] Checking achievements for user {user_id}")
         achievements = await check_and_award_achievements(
             user_id=user_id,
             trigger_type="completion",
@@ -325,6 +347,7 @@ async def handle_food_entry_gamification(
                 'meal_type': meal_type
             }
         )
+        logger.info(f"[GAMIFICATION] Achievement check complete: {len(achievements)} unlocked")
 
         for achievement in achievements:
             ach_xp = achievement['xp_reward']
@@ -348,10 +371,14 @@ async def handle_food_entry_gamification(
 
         result['message'] = '\n'.join(message_parts)
 
+        logger.info(f"[GAMIFICATION] Food entry gamification complete: {result}")
         return result
 
     except Exception as e:
-        logger.error(f"Error in food entry gamification: {e}", exc_info=True)
+        # FIX for Issue #121: Expose failures to user instead of silent failure
+        logger.error(f"[GAMIFICATION] ERROR in food entry gamification: {type(e).__name__}: {e}", exc_info=True)
+
+        # Return result with user notification
         return {
             'xp_awarded': 0,
             'level_up': False,
@@ -359,7 +386,7 @@ async def handle_food_entry_gamification(
             'streak_updated': False,
             'current_streak': 0,
             'achievements_unlocked': [],
-            'message': ''
+            'message': '⚠️ Gamification temporarily unavailable. Your food was logged successfully!'
         }
 
 
@@ -367,7 +394,7 @@ async def handle_sleep_quiz_gamification(
     user_id: str,
     sleep_entry_id: str,
     logged_at: datetime
-) -> Dict:
+) -> GamificationResult:
     """
     Handle gamification for sleep quiz completion
 
@@ -379,6 +406,8 @@ async def handle_sleep_quiz_gamification(
     Returns:
         Gamification result dict
     """
+    logger.info(f"[GAMIFICATION] handle_sleep_quiz_gamification called: user={user_id}")
+
     try:
         result = {
             'xp_awarded': 0,
@@ -458,7 +487,7 @@ async def handle_sleep_quiz_gamification(
         return result
 
     except Exception as e:
-        logger.error(f"Error in sleep quiz gamification: {e}", exc_info=True)
+        logger.error(f"[GAMIFICATION] ERROR in sleep quiz gamification: {type(e).__name__}: {e}", exc_info=True)
         return {
             'xp_awarded': 0,
             'level_up': False,
@@ -466,7 +495,7 @@ async def handle_sleep_quiz_gamification(
             'streak_updated': False,
             'current_streak': 0,
             'achievements_unlocked': [],
-            'message': ''
+            'message': '⚠️ Gamification temporarily unavailable. Your sleep data was logged successfully!'
         }
 
 
@@ -475,7 +504,7 @@ async def handle_tracking_entry_gamification(
     tracking_entry_id: str,
     category_name: str,
     logged_at: datetime
-) -> Dict:
+) -> GamificationResult:
     """
     Handle gamification for custom tracking entries
 
@@ -488,6 +517,8 @@ async def handle_tracking_entry_gamification(
     Returns:
         Gamification result dict
     """
+    logger.info(f"[GAMIFICATION] handle_tracking_entry_gamification called: user={user_id}, category={category_name}")
+
     try:
         result = {
             'xp_awarded': 0,
@@ -583,7 +614,7 @@ async def handle_tracking_entry_gamification(
         return result
 
     except Exception as e:
-        logger.error(f"Error in tracking entry gamification: {e}", exc_info=True)
+        logger.error(f"[GAMIFICATION] ERROR in tracking entry gamification: {type(e).__name__}: {e}", exc_info=True)
         return {
             'xp_awarded': 0,
             'level_up': False,
@@ -591,5 +622,5 @@ async def handle_tracking_entry_gamification(
             'streak_updated': False,
             'current_streak': 0,
             'achievements_unlocked': [],
-            'message': ''
+            'message': '⚠️ Gamification temporarily unavailable. Your tracking entry was logged successfully!'
         }

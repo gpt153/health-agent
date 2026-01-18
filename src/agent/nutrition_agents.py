@@ -267,9 +267,9 @@ if __name__ == "__main__":
     async def test_coordinator():
         """Test the coordinator with a problematic case"""
 
-        print("\n" + "="*60)
-        print("MULTI-AGENT COORDINATOR TEST")
-        print("="*60)
+        logger.info("\n" + "="*60)
+        logger.info("MULTI-AGENT COORDINATOR TEST")
+        logger.info("="*60)
 
         # Simulate the user's small salad case
         from src.models.food import FoodItem, FoodMacros
@@ -293,22 +293,22 @@ if __name__ == "__main__":
             quantity="small"
         )
 
-        print("\nAgent Estimates:")
+        logger.info("\nAgent Estimates:")
         for est in metadata["agent_estimates"]:
-            print(f"  {est['agent']}: {est['calories']} kcal - {est['reasoning']}")
+            logger.info(f"  {est['agent']}: {est['calories']} kcal - {est['reasoning']}")
 
-        print(f"\nVariance: {metadata['variance']:.1%}")
-        print(f"Debate required: {metadata['requires_debate']}")
-        print(f"Debate rounds: {metadata['debate_rounds']}")
+        logger.info(f"\nVariance: {metadata['variance']:.1%}")
+        logger.info(f"Debate required: {metadata['requires_debate']}")
+        logger.info(f"Debate rounds: {metadata['debate_rounds']}")
 
-        print(f"\nFinal Estimate:")
-        print(f"  Calories: {final_food.calories} kcal")
-        print(f"  Confidence: {final_food.confidence_score:.1%}")
-        print(f"  Source: {final_food.verification_source}")
+        logger.info(f"\nFinal Estimate:")
+        logger.info(f"  Calories: {final_food.calories} kcal")
+        logger.info(f"  Confidence: {final_food.confidence_score:.1%}")
+        logger.info(f"  Source: {final_food.verification_source}")
 
-        print("\n" + "="*60)
-        print("TEST COMPLETE")
-        print("="*60)
+        logger.info("\n" + "="*60)
+        logger.info("TEST COMPLETE")
+        logger.info("="*60)
 
     # Run test
     asyncio.run(test_coordinator())

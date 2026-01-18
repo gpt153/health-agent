@@ -2,10 +2,15 @@
 import logging
 import re
 import httpx
+import time
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timedelta
 from src.config import USDA_API_KEY, ENABLE_NUTRITION_VERIFICATION
 from src.models.food import FoodItem, FoodMacros, Micronutrients
+from src.resilience.circuit_breaker import with_circuit_breaker, USDA_BREAKER
+from src.resilience.retry import with_retry
+from src.resilience.metrics import record_api_call
+from src.db.nutrition_cache import get_from_cache, add_to_cache
 
 logger = logging.getLogger(__name__)
 
@@ -160,12 +165,16 @@ def parse_quantity(quantity_str: str) -> Tuple[float, str]:
     return 100.0, 'g'
 
 
+@with_circuit_breaker(USDA_BREAKER)
+@with_retry(max_retries=3)
 async def search_usda(
     food_name: str,
     max_results: int = 3
 ) -> Optional[Dict[str, Any]]:
     """
-    Search USDA FoodData Central for food items.
+    Search USDA FoodData Central for food items with circuit breaker protection.
+
+    Protected by circuit breaker and retry logic for resilience.
 
     Args:
         food_name: Normalized food name
@@ -173,22 +182,26 @@ async def search_usda(
 
     Returns:
         USDA API response dict or None if failed
+
+    Raises:
+        Exception if API call fails after retries or circuit is open
     """
     if not ENABLE_NUTRITION_VERIFICATION:
         logger.info("Nutrition verification disabled, skipping USDA search")
         return None
 
-    # Check cache
+    # Check in-memory cache
     cache_key = f"{food_name}:{max_results}"
     if cache_key in _cache:
         cached_data, cached_time = _cache[cache_key]
         if datetime.now() - cached_time < CACHE_DURATION:
-            logger.info(f"Cache hit for '{food_name}'")
+            logger.info(f"In-memory cache hit for '{food_name}'")
             return cached_data
         else:
             # Remove expired cache entry
             del _cache[cache_key]
 
+    start_time = time.time()
     try:
         url = "https://api.nal.usda.gov/fdc/v1/foods/search"
         params = {
@@ -206,21 +219,22 @@ async def search_usda(
 
             data = response.json()
 
-            # Cache the result
+            # Cache the result in memory
             _cache[cache_key] = (data, datetime.now())
+
+            # Record success metrics
+            duration = time.time() - start_time
+            record_api_call("usda", success=True, duration=duration)
 
             logger.info(f"USDA search returned {data.get('totalHits', 0)} results")
             return data
 
-    except httpx.TimeoutException:
-        logger.warning(f"USDA API timeout for '{food_name}'")
-        return None
-    except httpx.HTTPStatusError as e:
-        logger.error(f"USDA API HTTP error: {e.response.status_code} - {e.response.text}")
-        return None
     except Exception as e:
-        logger.error(f"USDA search error: {e}", exc_info=True)
-        return None
+        # Record failure metrics
+        duration = time.time() - start_time
+        record_api_call("usda", success=False, duration=duration)
+        logger.error(f"USDA search error: {type(e).__name__}: {e}")
+        raise  # Re-raise for circuit breaker and retry logic
 
 
 def scale_nutrients(
@@ -434,7 +448,44 @@ async def verify_food_items(food_items: List[FoodItem]) -> List[FoodItem]:
         except Exception as e:
             logger.error(f"Error verifying '{item.name}': {e}", exc_info=True)
 
-            # Phase 3: Try web search as fallback before giving up
+            # Phase 3.4: Multi-level fallback strategy
+            # 1. Try local SQLite cache
+            try:
+                normalized_name = normalize_food_name(item.name)
+                cached_data = await get_from_cache(normalized_name)
+
+                if cached_data:
+                    logger.info(f"Local cache hit for '{item.name}'")
+
+                    # Use cached data
+                    amount, unit = parse_quantity(item.quantity)
+                    # Scale from per-100g to actual quantity
+                    scale_factor = amount / 100.0 if unit == 'g' else 1.0
+
+                    verified_item = FoodItem(
+                        name=item.name,
+                        quantity=item.quantity,
+                        calories=int(cached_data['calories_per_100g'] * scale_factor),
+                        macros=FoodMacros(
+                            protein=cached_data['protein_per_100g'] * scale_factor,
+                            carbs=cached_data['carbs_per_100g'] * scale_factor,
+                            fat=cached_data['fat_per_100g'] * scale_factor,
+                            micronutrients=Micronutrients(
+                                fiber=cached_data.get('fiber_per_100g', 0) * scale_factor,
+                                sodium=cached_data.get('sodium_per_100g', 0) * scale_factor,
+                            )
+                        ),
+                        verification_source="local_cache",
+                        confidence_score=0.8  # High confidence for cached data
+                    )
+
+                    verified_items.append(verified_item)
+                    continue
+
+            except Exception as cache_error:
+                logger.warning(f"Local cache fallback failed: {cache_error}")
+
+            # 2. Try web search as fallback
             try:
                 from src.utils.web_nutrition_search import verify_with_web_search
 
@@ -449,7 +500,8 @@ async def verify_food_items(food_items: List[FoodItem]) -> List[FoodItem]:
             except Exception as web_error:
                 logger.warning(f"Web search fallback also failed: {web_error}")
 
-            # Final fallback: AI estimate only
+            # 3. Final fallback: AI estimate only
+            logger.info(f"All fallbacks exhausted for '{item.name}', using AI estimate")
             item.verification_source = "ai_estimate"
             item.confidence_score = 0.5
             verified_items.append(item)

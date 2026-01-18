@@ -2,7 +2,7 @@
 import logging
 import asyncio
 import os
-from src.config import validate_config, LOG_LEVEL
+from src.config import validate_config, LOG_LEVEL, ENABLE_SENTRY
 from src.db.connection import db
 from src.bot import create_bot_application
 from src.agent.dynamic_tools import tool_manager
@@ -15,6 +15,12 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+# Initialize Sentry monitoring early (for startup errors)
+if ENABLE_SENTRY:
+    from src.monitoring import init_sentry
+    init_sentry()
+    logger.info("Sentry monitoring initialized (early)")
 
 
 async def run_telegram_bot() -> None:
@@ -38,6 +44,12 @@ async def run_telegram_bot() -> None:
             # Load sleep quiz schedules
             logger.info("Loading sleep quiz schedules...")
             await reminder_manager.load_sleep_quiz_schedules()
+
+        # Schedule pattern mining jobs (Epic 009 - Phase 6)
+        logger.info("Scheduling pattern mining jobs...")
+        from src.scheduler.pattern_mining import PatternMiningScheduler
+        pattern_scheduler = PatternMiningScheduler(app)
+        await pattern_scheduler.schedule_pattern_mining()
 
         await app.updater.start_polling()
 
@@ -100,6 +112,26 @@ async def main() -> None:
         # Initialize database
         logger.info("Initializing database connection pool...")
         await db.init_pool()
+
+        # Initialize resilience components
+        logger.info("Initializing resilience components...")
+
+        # Initialize local nutrition cache (SQLite)
+        from src.db.nutrition_cache import init_nutrition_cache
+        try:
+            init_nutrition_cache()
+            logger.info("✓ Nutrition cache initialized with common foods")
+        except Exception as e:
+            logger.error(f"Failed to initialize nutrition cache: {e}", exc_info=True)
+
+        # Start Prometheus metrics server
+        from prometheus_client import start_http_server
+        from src.config import METRICS_PORT
+        try:
+            start_http_server(METRICS_PORT)
+            logger.info(f"✓ Prometheus metrics exposed on :{METRICS_PORT}/metrics")
+        except Exception as e:
+            logger.warning(f"Failed to start metrics server: {e}")
 
         # Load dynamic tools from database
         logger.info("Loading dynamic tools...")
