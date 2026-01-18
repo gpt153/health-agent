@@ -43,7 +43,6 @@ from src.handlers.reminders import (
     note_skip_handler
 )
 from src.gamification.integrations import (
-    handle_food_entry_gamification,
     handle_sleep_quiz_gamification,
     handle_tracking_entry_gamification
 )
@@ -907,6 +906,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     container = get_container()
     user_service = container.user_service
     food_service = container.food_service
+    gamification_service = container.gamification_service
 
     # Check authorization
     is_auth = await user_service.is_authorized(user_id)
@@ -1027,9 +1027,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         # Process gamification (XP, streaks, achievements)
         meal_type = entry.meal_type or "snack"  # Default if not set
-        gamification_result = await handle_food_entry_gamification(
+        gamification_result = await gamification_service.process_food_entry(
             user_id=user_id,
-            food_entry_id=entry.id,
+            food_entry_id=str(entry.id),
             logged_at=entry.timestamp,
             meal_type=meal_type
         )
