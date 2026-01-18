@@ -1530,7 +1530,13 @@ def create_bot_application() -> Application:
     # Initialize monitoring
     init_bot_monitoring()
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    # Build application with job_queue support enabled for reminder scheduling
+    app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .job_queue()  # CRITICAL: Enable job_queue for reminder scheduler
+        .build()
+    )
 
     # Initialize reminder manager
     reminder_manager = ReminderManager(app)
