@@ -350,6 +350,10 @@ OTEL_SERVICE_NAME = settings.otel_service_name
 OTEL_EXPORTER_OTLP_ENDPOINT = settings.otel_exporter_otlp_endpoint
 
 
+# Redis Cache
+REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+ENABLE_CACHE: bool = os.getenv("ENABLE_CACHE", "true").lower() == "true"
+
 
 def validate_config() -> None:
     """

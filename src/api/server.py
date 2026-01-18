@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from src.api.routes import router
-from src.api.middleware import setup_cors, setup_rate_limiting, setup_monitoring
+from src.api.middleware import setup_cors, setup_rate_limiting, setup_performance_monitoring, setup_monitoring
 from src.db.connection import db
 from src.config import LOG_LEVEL, ENABLE_SENTRY, ENABLE_PROMETHEUS
 from src.exceptions import (
@@ -75,6 +75,7 @@ def create_api_application() -> FastAPI:
     # Setup middleware
     setup_cors(app)
     setup_rate_limiting(app)
+    setup_performance_monitoring(app)
     setup_monitoring(app)
 
     # Setup metrics middleware
