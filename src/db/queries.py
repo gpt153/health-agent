@@ -1,4 +1,4 @@
-"""Database queries"""
+"""Database queries with performance profiling"""
 import json
 import logging
 from typing import Optional
@@ -11,6 +11,7 @@ from src.models.tracking import TrackingCategory, TrackingEntry
 from src.models.reminder import Reminder
 from src.models.sleep import SleepEntry
 from src.models.sleep_settings import SleepQuizSettings, SleepQuizSubmission
+from src.utils.profiling import profile_query
 
 logger = logging.getLogger(__name__)
 
@@ -583,20 +584,21 @@ async def get_conversation_history(
             logger.debug(f"Conversation history loaded from cache: {user_id}")
             return cached
 
-    # Cache miss - query database
-    async with db.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                SELECT role, content, message_type, metadata, timestamp
-                FROM conversation_history
-                WHERE user_id = %s
-                ORDER BY timestamp DESC
-                LIMIT %s
-                """,
-                (user_id, limit)
-            )
-            rows = await cur.fetchall()
+    # Cache miss - query database with profiling
+    async with profile_query("get_conversation_history", threshold_ms=50):
+        async with db.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    SELECT role, content, message_type, metadata, timestamp
+                    FROM conversation_history
+                    WHERE user_id = %s
+                    ORDER BY timestamp DESC
+                    LIMIT %s
+                    """,
+                    (user_id, limit)
+                )
+                rows = await cur.fetchall()
 
     # Reverse to get chronological order (oldest first)
     # Filter out unhelpful "I don't know" responses to keep history clean
