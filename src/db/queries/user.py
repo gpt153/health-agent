@@ -11,15 +11,33 @@ logger = logging.getLogger(__name__)
 
 # User operations
 async def create_user(telegram_id: str) -> None:
-    """Create new user in database"""
+    """
+    Create new user in database (idempotent).
+
+    Uses DO UPDATE to guarantee user existence after this call,
+    preventing race conditions in foreign key constraints.
+
+    This fixes Issue #120: Sleep quiz save failures due to missing users.
+    """
     async with db.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "INSERT INTO users (telegram_id) VALUES (%s) ON CONFLICT (telegram_id) DO NOTHING",
+                """
+                INSERT INTO users (telegram_id)
+                VALUES (%s)
+                ON CONFLICT (telegram_id) DO UPDATE SET
+                    telegram_id = EXCLUDED.telegram_id
+                RETURNING telegram_id
+                """,
                 (telegram_id,)
             )
+            result = await cur.fetchone()
             await conn.commit()
-    logger.info(f"Created user: {telegram_id}")
+
+    if result:
+        logger.info(f"Ensured user exists: {telegram_id}")
+    else:
+        logger.warning(f"Failed to create or verify user: {telegram_id}")
 
 
 async def user_exists(telegram_id: str) -> bool:

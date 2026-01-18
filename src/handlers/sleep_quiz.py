@@ -662,8 +662,26 @@ async def handle_alertness_callback(update: Update, context: ContextTypes.DEFAUL
     except Exception as e:
         logger.error(f"Error completing sleep quiz: {e}", exc_info=True)
 
+        # Detect foreign key constraint violations (Issue #120)
+        error_str = str(e).lower()
+        is_fk_violation = (
+            'foreign key' in error_str or
+            'violates foreign key constraint' in error_str or
+            'fk_' in error_str
+        )
+
+        if is_fk_violation:
+            logger.error(
+                f"FOREIGN KEY VIOLATION in sleep quiz for user {update.effective_user.id}. "
+                "This indicates user record is missing. Issue #120",
+                exc_info=True
+            )
+            error_msg = (
+                "❌ **Error:** Unable to save sleep data due to account issue.\n\n"
+                "Please contact support with error code: FK-SLEEP-120"
+            )
         # Check if data was saved before the error occurred
-        if 'data_saved' in locals() and data_saved:
+        elif 'data_saved' in locals() and data_saved:
             # Data was saved successfully, error happened after
             error_msg = (
                 "✅ Your sleep data was saved successfully!\n\n"
