@@ -1,0 +1,74 @@
+# Prometheus configuration for Health Agent
+#
+# This configuration scrapes metrics from the Health Agent API server
+# and stores them for visualization in Grafana.
+
+global:
+  # How frequently to scrape targets
+  scrape_interval: 15s
+
+  # How frequently to evaluate rules
+  evaluation_interval: 15s
+
+  # External labels attached to all time series
+  external_labels:
+    cluster: 'health-agent'
+    environment: 'development'
+
+# Scrape configuration
+scrape_configs:
+  # Health Agent API metrics
+  - job_name: 'health-agent-api'
+
+    # Metrics path (default is /metrics)
+    metrics_path: '/metrics'
+
+    # Scrape interval for this job
+    scrape_interval: 10s
+
+    # Scrape timeout
+    scrape_timeout: 5s
+
+    # Static targets
+    static_configs:
+      - targets:
+          # When running in Docker, use host.docker.internal to reach host
+          # For production, replace with actual API endpoint
+          - 'host.docker.internal:8080'
+
+        labels:
+          service: 'health-agent'
+          component: 'api'
+
+    # Relabel configurations
+    relabel_configs:
+      # Add instance label with hostname
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'health-agent-api'
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+          component: 'monitoring'
+
+  # Grafana metrics (optional)
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['grafana:3000']
+        labels:
+          service: 'grafana'
+          component: 'visualization'
+
+# Alerting configuration (optional - for future use)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ['alertmanager:9093']
+
+# Rule files (for recording rules and alerts)
+# rule_files:
+#   - '/etc/prometheus/rules/*.yml'
