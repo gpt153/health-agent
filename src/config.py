@@ -35,6 +35,16 @@ LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 USDA_API_KEY: str = os.getenv("USDA_API_KEY", "DEMO_KEY")
 ENABLE_NUTRITION_VERIFICATION: bool = os.getenv("ENABLE_NUTRITION_VERIFICATION", "true").lower() == "true"
 
+# Observability
+SENTRY_DSN: str = os.getenv("SENTRY_DSN", "")
+SENTRY_ENVIRONMENT: str = os.getenv("SENTRY_ENVIRONMENT", "development")
+SENTRY_TRACES_SAMPLE_RATE: float = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.1"))
+ENABLE_SENTRY: bool = os.getenv("ENABLE_SENTRY", "true").lower() == "true"
+ENABLE_METRICS: bool = os.getenv("ENABLE_METRICS", "true").lower() == "true"
+ENABLE_TRACING: bool = os.getenv("ENABLE_TRACING", "true").lower() == "true"
+OTEL_SERVICE_NAME: str = os.getenv("OTEL_SERVICE_NAME", "health-agent")
+OTEL_EXPORTER_OTLP_ENDPOINT: str = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+
 # Validation
 def validate_config() -> None:
     """Validate required configuration"""

@@ -6,6 +6,7 @@ from src.config import validate_config, LOG_LEVEL
 from src.db.connection import db
 from src.bot import create_bot_application
 from src.agent.dynamic_tools import tool_manager
+from src.observability.sentry_config import init_sentry, shutdown_sentry
 
 # Configure logging
 logging.basicConfig(
@@ -84,6 +85,9 @@ async def run_api_server() -> None:
 async def main() -> None:
     """Main application entry point"""
     try:
+        # Initialize observability first (before any errors can occur)
+        init_sentry()
+
         # Validate configuration
         logger.info("Validating configuration...")
         validate_config()
@@ -127,6 +131,10 @@ async def main() -> None:
     finally:
         logger.info("Closing database connection...")
         await db.close_pool()
+
+        # Shutdown observability (flush any pending events)
+        shutdown_sentry()
+
         logger.info("Shutdown complete")
 
 
