@@ -31,6 +31,10 @@ async def lifespan(app: FastAPI):
     loaded_tools = await tool_manager.load_all_tools()
     logger.info(f"Loaded {len(loaded_tools)} dynamic tools")
 
+    # Initialize metrics
+    from src.observability.metrics import init_metrics
+    init_metrics()
+
     yield
 
     # Shutdown
@@ -51,6 +55,10 @@ def create_api_application() -> FastAPI:
     # Setup middleware
     setup_cors(app)
     setup_rate_limiting(app)
+
+    # Setup metrics middleware
+    from src.observability.metrics_middleware import setup_metrics_middleware
+    setup_metrics_middleware(app)
 
     # Include routes
     app.include_router(router)

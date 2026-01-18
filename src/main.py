@@ -101,8 +101,16 @@ async def main() -> None:
         loaded_tools = await tool_manager.load_all_tools()
         logger.info(f"Loaded {len(loaded_tools)} dynamic tools: {', '.join(loaded_tools) if loaded_tools else 'none'}")
 
-        # Determine run mode from environment
+        # Initialize metrics (only for bot mode, API initializes in its own lifespan)
         run_mode = os.getenv("RUN_MODE", "bot").lower()
+        if run_mode in ("bot", "both"):
+            from src.observability.metrics import init_metrics
+            from src.observability.metrics_collector import start_metrics_collector
+            init_metrics()
+            # Start background metrics collector
+            await start_metrics_collector(interval=60)
+
+        # Determine run mode from environment
 
         if run_mode == "both":
             # Run both bot and API in parallel
@@ -131,6 +139,10 @@ async def main() -> None:
     finally:
         logger.info("Closing database connection...")
         await db.close_pool()
+
+        # Stop metrics collector
+        from src.observability.metrics_collector import stop_metrics_collector
+        await stop_metrics_collector()
 
         # Shutdown observability (flush any pending events)
         shutdown_sentry()

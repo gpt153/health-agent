@@ -755,3 +755,23 @@ async def health_check():
         database=db_status,
         timestamp=datetime.now()
     )
+
+
+@router.get("/metrics")
+async def metrics():
+    """
+    Prometheus metrics endpoint.
+
+    Exposes all application metrics in Prometheus text format.
+    This endpoint should be scraped by Prometheus server.
+
+    Returns:
+        Metrics in Prometheus exposition format
+    """
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    from fastapi.responses import Response
+
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST
+    )
