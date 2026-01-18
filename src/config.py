@@ -35,6 +35,10 @@ LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 USDA_API_KEY: str = os.getenv("USDA_API_KEY", "DEMO_KEY")
 ENABLE_NUTRITION_VERIFICATION: bool = os.getenv("ENABLE_NUTRITION_VERIFICATION", "true").lower() == "true"
 
+# Redis Cache
+REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+ENABLE_CACHE: bool = os.getenv("ENABLE_CACHE", "true").lower() == "true"
+
 # Validation
 def validate_config() -> None:
     """Validate required configuration"""

@@ -521,7 +521,9 @@ async def save_conversation_message(
 ) -> None:
     """
     Save a message to conversation history
-    
+
+    Invalidates conversation history cache for this user.
+
     Args:
         user_id: Telegram user ID
         role: 'user' or 'assistant'
@@ -529,6 +531,8 @@ async def save_conversation_message(
         message_type: 'text', 'photo', 'reminder', 'voice', etc.
         metadata: Additional context (photo analysis, etc.)
     """
+    from src.cache.redis_client import get_cache
+
     async with db.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -540,6 +544,12 @@ async def save_conversation_message(
             )
             await conn.commit()
 
+    # Invalidate conversation history cache (all limits for this user)
+    cache = get_cache()
+    if cache:
+        await cache.delete_pattern(f"conversation_history:{user_id}:*")
+        logger.debug(f"Conversation history cache invalidated: {user_id}")
+
 
 async def get_conversation_history(
     user_id: str,
@@ -547,14 +557,33 @@ async def get_conversation_history(
 ) -> list[dict]:
     """
     Get recent conversation history for a user
-    
+
+    With Redis caching (30min TTL):
+    - Check cache first (keyed by user_id and limit)
+    - Query database on cache miss
+    - Cache results for subsequent requests
+    - Invalidated when new messages are saved
+
     Args:
         user_id: Telegram user ID
         limit: Maximum number of messages to retrieve (default: 20 = 10 turns)
-        
+
     Returns:
         List of messages in format: [{"role": "user", "content": "..."}]
     """
+    from src.cache.redis_client import get_cache
+
+    cache = get_cache()
+    cache_key = f"conversation_history:{user_id}:{limit}"
+
+    # Try cache first
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            logger.debug(f"Conversation history loaded from cache: {user_id}")
+            return cached
+
+    # Cache miss - query database
     async with db.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -568,7 +597,7 @@ async def get_conversation_history(
                 (user_id, limit)
             )
             rows = await cur.fetchall()
-    
+
     # Reverse to get chronological order (oldest first)
     # Filter out unhelpful "I don't know" responses to keep history clean
     unhelpful_phrases = [
@@ -594,6 +623,11 @@ async def get_conversation_history(
             "role": row["role"],
             "content": row["content"]
         })
+
+    # Cache for 30 minutes
+    if cache:
+        await cache.set(cache_key, messages, ttl=1800)
+        logger.debug(f"Conversation history cached (30min TTL): {user_id}")
 
     return messages
 

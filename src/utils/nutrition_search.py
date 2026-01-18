@@ -1,4 +1,9 @@
-"""USDA FoodData Central API integration for nutritional data verification"""
+"""USDA FoodData Central API integration for nutritional data verification
+
+Redis caching (24hr TTL) for:
+- USDA API responses
+- Nutrition calculations
+"""
 import logging
 import re
 import httpx
@@ -9,7 +14,7 @@ from src.models.food import FoodItem, FoodMacros, Micronutrients
 
 logger = logging.getLogger(__name__)
 
-# Simple in-memory cache with expiration
+# Legacy in-memory cache (fallback if Redis unavailable)
 _cache: Dict[str, Tuple[Dict[Any, Any], datetime]] = {}
 CACHE_DURATION = timedelta(hours=24)  # Cache for 24 hours
 API_TIMEOUT = 5.0  # 5 second timeout for API calls
@@ -167,6 +172,11 @@ async def search_usda(
     """
     Search USDA FoodData Central for food items.
 
+    With Redis caching (24hr TTL):
+    - Check Redis cache first
+    - Fallback to in-memory cache
+    - Store results in both caches
+
     Args:
         food_name: Normalized food name
         max_results: Maximum number of results to return
@@ -178,12 +188,27 @@ async def search_usda(
         logger.info("Nutrition verification disabled, skipping USDA search")
         return None
 
-    # Check cache
+    from src.cache.redis_client import get_cache
+
+    redis_cache = get_cache()
+    redis_cache_key = f"usda:{food_name}:{max_results}"
+
+    # Check Redis cache first
+    if redis_cache:
+        cached = await redis_cache.get(redis_cache_key)
+        if cached:
+            logger.info(f"Redis cache hit for '{food_name}'")
+            return cached
+
+    # Fallback to in-memory cache
     cache_key = f"{food_name}:{max_results}"
     if cache_key in _cache:
         cached_data, cached_time = _cache[cache_key]
         if datetime.now() - cached_time < CACHE_DURATION:
-            logger.info(f"Cache hit for '{food_name}'")
+            logger.info(f"In-memory cache hit for '{food_name}'")
+            # Update Redis cache
+            if redis_cache:
+                await redis_cache.set(redis_cache_key, cached_data, ttl=86400)
             return cached_data
         else:
             # Remove expired cache entry
@@ -206,8 +231,12 @@ async def search_usda(
 
             data = response.json()
 
-            # Cache the result
+            # Cache the result in both caches
             _cache[cache_key] = (data, datetime.now())
+
+            if redis_cache:
+                await redis_cache.set(redis_cache_key, data, ttl=86400)  # 24 hours
+                logger.debug(f"Cached USDA result in Redis (24hr TTL): {food_name}")
 
             logger.info(f"USDA search returned {data.get('totalHits', 0)} results")
             return data

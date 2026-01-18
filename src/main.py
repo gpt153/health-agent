@@ -92,6 +92,12 @@ async def main() -> None:
         logger.info("Initializing database connection pool...")
         await db.init_pool()
 
+        # Initialize Redis cache
+        logger.info("Initializing Redis cache...")
+        from src.cache.redis_client import init_cache
+        from src.config import REDIS_URL, ENABLE_CACHE
+        await init_cache(REDIS_URL, enabled=ENABLE_CACHE)
+
         # Load dynamic tools from database
         logger.info("Loading dynamic tools...")
         loaded_tools = await tool_manager.load_all_tools()
