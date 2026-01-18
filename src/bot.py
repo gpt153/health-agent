@@ -8,8 +8,6 @@ import telegram.error
 from src.config import TELEGRAM_BOT_TOKEN, DATA_PATH, TELEGRAM_TOPIC_FILTER
 from src.utils.auth import is_authorized
 from src.db.queries import (
-    create_user,
-    user_exists,
     save_food_entry,
     save_conversation_message,
     get_conversation_history,
@@ -27,6 +25,7 @@ from src.utils.vision import analyze_food_photo
 from src.utils.voice import transcribe_voice
 from src.models.food import FoodEntry
 from src.scheduler.reminder_manager import ReminderManager
+from src.services.container import get_container
 from src.handlers.onboarding import (
     handle_onboarding_start,
     handle_onboarding_message,
@@ -244,22 +243,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not should_process_message(update):
         return
 
-    # Create user in database if doesn't exist (with pending status)
-    if not await user_exists(user_id):
-        await create_user(user_id)
-        await memory_manager.create_user_files(user_id)
+    # Get service container
+    container = get_container()
+    user_service = container.user_service
 
-        # Auto-detect and set timezone for new users
+    # Create user if doesn't exist
+    user_result = await user_service.create_user(user_id)
+    if not user_result['success']:
+        await update.message.reply_text("❌ Error creating user. Please try again.")
+        return
+
+    # Auto-detect and set timezone for new users
+    if not user_result.get('existing'):
         from src.utils.timezone_helper import suggest_timezones_for_language
         language_code = update.effective_user.language_code or "en"
         suggested_timezones = suggest_timezones_for_language(language_code)
         detected_timezone = suggested_timezones[0] if suggested_timezones else "UTC"
-        await memory_manager.update_preferences(user_id, "timezone", detected_timezone)
+        await user_service.set_timezone(user_id, detected_timezone)
         logger.info(f"Set timezone for new user {user_id}: {detected_timezone}")
 
     # Check if user is activated
-    from src.db.queries import get_user_subscription_status, get_onboarding_state
-    subscription = await get_user_subscription_status(user_id)
+    subscription = await user_service.get_subscription_status(user_id)
 
     if not subscription or subscription['status'] == 'pending':
         # User needs to activate with invite code
@@ -277,7 +281,7 @@ Don't have a code? Contact the admin to request one."""
         return
 
     # User is activated, check onboarding status
-    onboarding = await get_onboarding_state(user_id)
+    onboarding = await user_service.get_onboarding_state(user_id)
 
     if not onboarding or not onboarding.get('completed_at'):
         # Start onboarding flow
@@ -301,16 +305,20 @@ async def onboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not should_process_message(update):
         return
 
+    # Get service container
+    container = get_container()
+    user_service = container.user_service
+
     # Check if user is authorized
-    if not await is_authorized(user_id):
+    is_auth = await user_service.is_authorized(user_id)
+    if not is_auth:
         await update.message.reply_text(
             "⚠️ Please activate your account first using /start"
         )
         return
 
     # Reset onboarding state to start fresh
-    from src.db.queries import get_onboarding_state
-    onboarding = await get_onboarding_state(user_id)
+    onboarding = await user_service.get_onboarding_state(user_id)
 
     if onboarding:
         # Clear existing onboarding state
@@ -340,10 +348,12 @@ async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not should_process_message(update):
         return
 
+    # Get service container
+    container = get_container()
+    user_service = container.user_service
+
     # Ensure user exists in database
-    if not await user_exists(user_id):
-        await create_user(user_id)
-        await memory_manager.create_user_files(user_id)
+    await user_service.create_user(user_id)
 
     # Get the invite code from command args or message text
     message_text = update.message.text.strip()
@@ -363,12 +373,10 @@ async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    # Validate and use the invite code
-    from src.db.queries import validate_invite_code, use_invite_code
+    # Activate user with invite code
+    activation_result = await user_service.activate_user(user_id, code)
 
-    code_details = await validate_invite_code(code)
-
-    if not code_details:
+    if not activation_result['success']:
         await update.message.reply_text(
             "❌ **Invalid invite code**\n\n"
             "This code is either:\n"
@@ -379,19 +387,10 @@ async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    # Use the code to activate user
-    success = await use_invite_code(code, user_id)
-
-    if not success:
-        await update.message.reply_text(
-            "❌ **Activation failed**\n\n"
-            "There was a problem activating your account. Please contact support."
-        )
-        return
-
     # Success! User is now activated
-    tier = code_details['tier']
-    trial_days = code_details['trial_days']
+    code_details = activation_result.get('code_details', {})
+    tier = code_details.get('tier', 'basic')
+    trial_days = code_details.get('trial_days', 0)
 
     if trial_days > 0:
         success_message = f"""✅ **Account Activated!**
@@ -714,9 +713,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text = update.message.text
     logger.info(f"Message from {user_id}: {text[:50]}...")
 
+    # Get service container
+    container = get_container()
+    user_service = container.user_service
+
     # Check if user is pending activation
-    from src.db.queries import get_user_subscription_status, get_onboarding_state
-    subscription = await get_user_subscription_status(user_id)
+    subscription = await user_service.get_subscription_status(user_id)
 
     if subscription and subscription['status'] == 'pending':
         # User is pending, check if message looks like an invite code
@@ -737,14 +739,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
     # Check if user is in onboarding
-    onboarding = await get_onboarding_state(user_id)
+    onboarding = await user_service.get_onboarding_state(user_id)
     if onboarding and not onboarding.get('completed_at'):
         # Route to onboarding handler
         await handle_onboarding_message(update, context)
         return
 
     # Check authorization (for active users)
-    if not await is_authorized(user_id):
+    is_auth = await user_service.is_authorized(user_id)
+    if not is_auth:
         return
 
     # Check if user is entering a custom note

@@ -6,6 +6,8 @@ from src.config import validate_config, LOG_LEVEL
 from src.db.connection import db
 from src.bot import create_bot_application
 from src.agent.dynamic_tools import tool_manager
+from src.memory.file_manager import memory_manager
+from src.services.container import init_container, set_reminder_manager
 
 # Configure logging
 logging.basicConfig(
@@ -37,6 +39,10 @@ async def run_telegram_bot() -> None:
             # Load sleep quiz schedules
             logger.info("Loading sleep quiz schedules...")
             await reminder_manager.load_sleep_quiz_schedules()
+
+            # Set reminder_manager on service container
+            set_reminder_manager(reminder_manager)
+            logger.info("ReminderManager set on service container")
 
         await app.updater.start_polling()
 
@@ -91,6 +97,15 @@ async def main() -> None:
         # Initialize database
         logger.info("Initializing database connection pool...")
         await db.init_pool()
+
+        # Initialize service container
+        logger.info("Initializing service container...")
+        container = init_container(
+            db=db,
+            memory_manager=memory_manager,
+            reminder_manager=None  # Will be set after bot creation
+        )
+        logger.info("Service container initialized successfully")
 
         # Load dynamic tools from database
         logger.info("Loading dynamic tools...")
